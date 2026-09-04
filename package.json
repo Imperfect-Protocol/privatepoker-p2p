@@ -1,0 +1,25 @@
+{
+  "name": "privatepoker-p2p",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.js",
+  "module": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./core/*": "./src/core/*.js",
+    "./events/*": "./src/events/*.js",
+    "./state/*": "./src/state/*.js",
+    "./network/*": "./src/network/*.js",
+    "./webrtc/*": "./src/webrtc/*.js",
+    "./mesh/*": "./src/mesh/*.js",
+    "./config/*": "./src/config/*.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test src/**/*.test.js"
+  },
+  "dependencies": {}
+}
