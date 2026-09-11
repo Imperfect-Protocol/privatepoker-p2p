@@ -4,6 +4,9 @@ class VirtualNetworkLogDirection {
     if (event.type === 'MessageReceived') return '<<';
     if (event.type === 'PeerConnected') return '==';
     if (event.type === 'PeerWaiting') return '..';
+    if (event.type === 'PeerWaitRequest') return '..';
+    if (event.type === 'PeerWaitAccepted') return '<<';
+    if (event.type === 'PeerWaitRejected') return '!!';
     if (event.type === 'PeerDisconnected') return '--';
     if (event.type === 'ConnectionTimeout') return '!!';
     if (event.type === 'ConnectionFailed') return '!!';
@@ -35,6 +38,9 @@ class VirtualNetworkLogName {
     if (event.type === 'MessageReceived') return VirtualNetworkLogName.forMessageData(event.messageData);
     if (event.type === 'PeerConnected') return 'Connected';
     if (event.type === 'PeerWaiting') return 'Peer Waiting';
+    if (event.type === 'PeerWaitRequest') return 'Peer Waiting';
+    if (event.type === 'PeerWaitAccepted') return 'Peer Accepted';
+    if (event.type === 'PeerWaitRejected') return 'Peer Rejected';
     if (event.type === 'PeerDisconnected') return 'Disconnected';
     if (event.type === 'ConnectionTimeout') return 'Timeout';
     if (event.type === 'ConnectionFailed') return 'Failed';

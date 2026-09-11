@@ -136,6 +136,38 @@ export class LobbyRouteKeeper {
     );
   }
 
+  acceptWaitingRequest(request) {
+    this.sendWaitingDecision('p2p-peer-waiting-accepted', request, {
+      decisionReason: 'accepted',
+    });
+  }
+
+  rejectWaitingRequest(request) {
+    this.sendWaitingDecision('p2p-peer-waiting-rejected', request, {
+      decisionReason: 'later',
+    });
+  }
+
+  sendWaitingDecision(type, request, fields = {}) {
+    if (!request) return;
+    this.ensureHost();
+    this.host.broadcastControl({
+      type,
+      from: this.ownerAddress,
+      to: request.from,
+      senderRole: this.role,
+      targetRole: request.requesterRole,
+      targetInstanceId: request.requesterInstanceId,
+      subscriptionLabel: request.subscriptionLabel,
+      channelLabel: request.channelLabel,
+      via: 'p2p',
+      flowId: request.requestId,
+      lobbyId: request.lobbyId,
+      tableId: request.tableId,
+      decisionReason: fields.decisionReason,
+    });
+  }
+
   ensureHost() {
     if (this.host) return this.host;
     this.host = new VirtualNetworkHost(

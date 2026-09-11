@@ -145,6 +145,31 @@ export class VirtualSubscription {
     }));
   }
 
+  handlePeerWaitAccepted(message) {
+    this.network.handler(VirtualNetworkEvent.peerWaitAccepted({
+      state: this.state,
+      subscriptionLabel: this.subscriptionLabel,
+      channelLabel: this.channelLabel,
+      lobbyId: this.lobbyId,
+      tableId: this.tableId,
+      peerAddress: this.peerAddress.toString(),
+      decisionReason: message.decisionReason,
+    }));
+  }
+
+  handlePeerWaitRejected(message) {
+    this.stateMachine.peerRejected();
+    this.network.handler(VirtualNetworkEvent.peerWaitRejected({
+      state: ConnectionState.PEER_REJECTED,
+      subscriptionLabel: this.subscriptionLabel,
+      channelLabel: this.channelLabel,
+      lobbyId: this.lobbyId,
+      tableId: this.tableId,
+      peerAddress: this.peerAddress.toString(),
+      decisionReason: message.decisionReason,
+    }));
+  }
+
   handleMessage(peerSession, message) {
     if (!this.isCurrentPeerSession(peerSession)) return;
     this.network.handler(VirtualNetworkEvent.messageReceived({

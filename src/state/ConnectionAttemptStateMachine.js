@@ -26,6 +26,12 @@ export class ConnectionAttemptStateMachine {
     this.transition(ConnectionState.PEER_WAITING);
   }
 
+  peerRejected() {
+    this.clearTimer();
+    this.subscription.abortNegotiation();
+    this.transition(ConnectionState.PEER_REJECTED);
+  }
+
   timedOut() {
     const timedOutState = this.state;
     this.clearTimer();

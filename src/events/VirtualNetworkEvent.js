@@ -14,6 +14,18 @@ export class VirtualNetworkEvent {
     return new VirtualNetworkEvent(VirtualNetworkEventType.PEER_WAITING, fields);
   }
 
+  static peerWaitRequest(fields) {
+    return new VirtualNetworkEvent(VirtualNetworkEventType.PEER_WAIT_REQUEST, fields);
+  }
+
+  static peerWaitAccepted(fields) {
+    return new VirtualNetworkEvent(VirtualNetworkEventType.PEER_WAIT_ACCEPTED, fields);
+  }
+
+  static peerWaitRejected(fields) {
+    return new VirtualNetworkEvent(VirtualNetworkEventType.PEER_WAIT_REJECTED, fields);
+  }
+
   static connectionTimeout(fields) {
     return new VirtualNetworkEvent(VirtualNetworkEventType.CONNECTION_TIMEOUT, fields);
   }

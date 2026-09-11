@@ -159,6 +159,8 @@ export class VirtualNetworkHost {
     if (message.type === 'mesh-announce') this.handleMeshAnnounce(message);
     if (message.type === 'p2p-mst-announce') this.handleP2PAnnounce(message);
     if (message.type === 'p2p-peer-waiting') this.handleP2PPeerWaiting(message);
+    if (message.type === 'p2p-peer-waiting-accepted') this.handleP2PPeerWaitAccepted(message);
+    if (message.type === 'p2p-peer-waiting-rejected') this.handleP2PPeerWaitRejected(message);
     if (message.type === 'sdp-offer') void this.handleSdpOffer(message);
     if (message.type === 'sdp-answer') void this.handleSdpAnswer(message);
     this.respondPeerWaitingWhenLobbyRouteFound(message);
@@ -233,6 +235,22 @@ export class VirtualNetworkHost {
     subscription.handlePeerWaiting(message);
   }
 
+  handleP2PPeerWaitAccepted(message) {
+    if (message.to !== this.address.toString()) return;
+    if (!this.acceptsControlTarget(message)) return;
+    const subscription = this.findSubscriptionByMessage(message);
+    if (!subscription) return;
+    subscription.handlePeerWaitAccepted(message);
+  }
+
+  handleP2PPeerWaitRejected(message) {
+    if (message.to !== this.address.toString()) return;
+    if (!this.acceptsControlTarget(message)) return;
+    const subscription = this.findSubscriptionByMessage(message);
+    if (!subscription) return;
+    subscription.handlePeerWaitRejected(message);
+  }
+
   respondPeerWaitingWhenLobbyRouteFound(message) {
     if (this.config.role !== 'lobby') return;
     if (message.type !== 'p2p-mst-announce') return;
@@ -264,6 +282,20 @@ export class VirtualNetworkHost {
       tableId: message.tableId,
       peerAddress: message.from,
     });
+    this.handler(VirtualNetworkEvent.peerWaitRequest({
+      requestId: message.id,
+      state: ConnectionState.PEER_WAITING,
+      from: message.from,
+      to: message.to,
+      requesterRole: message.senderRole,
+      requesterInstanceId: message.initiatorInstanceId,
+      subscriptionLabel: message.subscriptionLabel,
+      channelLabel: message.channelLabel,
+      lobbyId: message.lobbyId,
+      tableId: message.tableId,
+      peerAddress: message.from,
+      waitingReason: 'destination-browser-reachable-table-endpoint-not-ready',
+    }));
   }
 
   async sendOffer(peerAddress, subscriptionLabel, channelLabel, via, flowId = '', lobbyId = undefined, tableId = undefined, control = {}) {

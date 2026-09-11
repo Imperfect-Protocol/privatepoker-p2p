@@ -19,6 +19,7 @@ export class ControlMessage {
     this.flowId = fields.flowId;
     this.sdp = fields.sdp;
     this.waitingReason = fields.waitingReason;
+    this.decisionReason = fields.decisionReason;
     this.ttl = fields.ttl;
   }
 

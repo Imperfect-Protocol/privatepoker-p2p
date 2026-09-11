@@ -66,7 +66,7 @@ class TestPeerSession {
   }
 }
 
-function makeHost() {
+function makeHost(fields = {}) {
   const runtime = {
     BroadcastChannel: null,
     RTCPeerConnection: null,
@@ -76,7 +76,7 @@ function makeHost() {
     setTimer: setTimeout,
   };
   const host = new VirtualNetworkHost(
-    () => {},
+    fields.handler ?? (() => {}),
     '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     new Uint8Array(32),
     {
@@ -148,7 +148,8 @@ test('subscribe adds a second scoped connection without killing existing p2p tra
 });
 
 test('lobby route answers table p2p announce with peer waiting message', () => {
-  const host = makeHost();
+  const events = [];
+  const host = makeHost({ handler: (event) => events.push(event) });
   host.config.role = 'lobby';
   const responses = [];
   host.broadcastControl = (message) => responses.push(message);
@@ -169,4 +170,34 @@ test('lobby route answers table p2p announce with peer waiting message', () => {
   assert.equal(responses[0].type, 'p2p-peer-waiting');
   assert.equal(responses[0].targetRole, 'table');
   assert.equal(responses[0].targetInstanceId, 'table-instance');
+  assert.equal(events.at(-1).type, 'PeerWaitRequest');
+  assert.equal(events.at(-1).requesterInstanceId, 'table-instance');
+});
+
+test('peer waiting rejection moves requester to rejected state', () => {
+  const events = [];
+  const host = makeHost({ handler: (event) => events.push(event) });
+  host.subscribe(
+    'inbound',
+    'outbound',
+    '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    10_000,
+    '1',
+    '7',
+  );
+
+  host.handleP2PPeerWaitRejected({
+    type: 'p2p-peer-waiting-rejected',
+    from: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    targetRole: 'peer',
+    subscriptionLabel: 'inbound',
+    channelLabel: 'outbound',
+    lobbyId: '1',
+    tableId: '7',
+    decisionReason: 'later',
+  });
+
+  assert.equal(events.at(-1).type, 'PeerWaitRejected');
+  assert.equal(events.at(-1).state, 'PeerRejected');
 });
