@@ -1,8 +1,12 @@
-# privatepoker-p2p
+# P2P Network Library - Virtual Network over WebRTC
 
-`privatepoker-p2p` is the standalone Private Poker virtual network library.
+**Author:** [Sonia Code](https://github.com/sadhbh-c0d3)
 
-The public surface is intentionally small:
+*Copyright (c) 2026 Sonia Kolasinska / Imperfect Protocol. All Rights Reserved.*
+
+---
+
+## Usage
 
 ```js
 const virtualNet = new VirtualNetwork(handlerFunction, address, privateKey);
