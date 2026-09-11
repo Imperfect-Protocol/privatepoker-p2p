@@ -163,7 +163,6 @@ export class VirtualNetworkHost {
     if (message.type === 'p2p-peer-waiting-rejected') this.handleP2PPeerWaitRejected(message);
     if (message.type === 'sdp-offer') void this.handleSdpOffer(message);
     if (message.type === 'sdp-answer') void this.handleSdpAnswer(message);
-    this.respondPeerWaitingWhenLobbyRouteFound(message);
 
     if (message.to !== this.address.toString() && message.ttl > 1) {
       this.sendControlToConnectedPeers(ControlMessage.create(
@@ -174,6 +173,11 @@ export class VirtualNetworkHost {
         this.instanceId,
       ).nextHop(this.address.toString(), this.instanceId));
     }
+  }
+
+  handleControlRouteResult(message, route) {
+    if (route !== 'scatter') return;
+    this.respondPeerWaitingWhenLobbyRouteFound(message);
   }
 
   handleMeshAnnounce(message) {
@@ -396,6 +400,7 @@ export class VirtualNetworkHost {
       from: this.address.toString(),
       to: message.from,
       senderRole: this.config.role,
+      targetRole: message.senderRole ?? message.targetRole,
       targetInstanceId: message.responderInstanceId,
       subscriptionLabel: subscription.subscriptionLabel,
       channelLabel: subscription.channelLabel,

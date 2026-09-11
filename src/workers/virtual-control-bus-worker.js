@@ -51,6 +51,22 @@ function post(portId, message) {
   return true;
 }
 
+function routeEnvelope(envelope, route) {
+  return {
+    ...envelope,
+    route,
+  };
+}
+
+function postRouteResult(portId, envelope, route, targetCount) {
+  post(portId, {
+    type: 'CONTROL_ROUTE_RESULT',
+    message: envelope.message,
+    route,
+    targetCount,
+  });
+}
+
 function broadcast(message, exceptPortId) {
   let sent = false;
   ports.forEach((entry, portId) => {
@@ -65,7 +81,7 @@ function routeControlMessage(envelope, portId) {
   const targetPortIds = key ? [...(sessions.get(key) ?? [])].filter((targetPortId) => targetPortId !== portId) : [];
   let sent = false;
   targetPortIds.forEach((targetPortId) => {
-    sent = post(targetPortId, envelope) || sent;
+    sent = post(targetPortId, routeEnvelope(envelope, 'direct')) || sent;
   });
   if (sent) {
     log('route.direct', {
@@ -74,6 +90,7 @@ function routeControlMessage(envelope, portId) {
       targetCount: targetPortIds.length,
       messageType: envelope.message?.type,
     });
+    postRouteResult(portId, envelope, 'direct', targetPortIds.length);
     return;
   }
   log('route.scatter', {
@@ -81,7 +98,8 @@ function routeControlMessage(envelope, portId) {
     fromPortId: portId,
     messageType: envelope.message?.type,
   });
-  broadcast(envelope, portId);
+  broadcast(routeEnvelope(envelope, 'scatter'), portId);
+  postRouteResult(portId, envelope, 'scatter', 0);
 }
 
 self.onconnect = (event) => {
