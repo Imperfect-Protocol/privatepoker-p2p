@@ -1,5 +1,6 @@
 export const VirtualNetworkEventType = Object.freeze({
   PEER_CONNECTED: 'PeerConnected',
+  PEER_WAITING: 'PeerWaiting',
   CONNECTION_TIMEOUT: 'ConnectionTimeout',
   PEER_DISCONNECTED: 'PeerDisconnected',
   MESSAGE_DELIVERED: 'MessageDelivered',

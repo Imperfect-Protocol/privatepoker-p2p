@@ -57,7 +57,7 @@ export class VirtualSubscription {
 
   shouldTryMeshNodeFirst() {
     if (this.hasP2PRoute()) return false;
-    return this.timedOutOnce || this.network.shouldUseMeshFirst(this.peerAddress);
+    return true;
   }
 
   rememberTimeout(timedOutState = this.state) {
@@ -129,6 +129,19 @@ export class VirtualSubscription {
       lobbyId: this.lobbyId,
       tableId: this.tableId,
       peerAddress: this.peerAddress.toString(),
+    }));
+  }
+
+  handlePeerWaiting(message) {
+    this.stateMachine.peerWaiting();
+    this.network.handler(VirtualNetworkEvent.peerWaiting({
+      state: ConnectionState.PEER_WAITING,
+      subscriptionLabel: this.subscriptionLabel,
+      channelLabel: this.channelLabel,
+      lobbyId: this.lobbyId,
+      tableId: this.tableId,
+      peerAddress: this.peerAddress.toString(),
+      waitingReason: message.waitingReason,
     }));
   }
 

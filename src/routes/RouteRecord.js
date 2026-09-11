@@ -6,6 +6,9 @@ export class RouteRecord {
     this.tableId = String(fields.tableId ?? '1');
     this.backgroundTableId = String(fields.backgroundTableId ?? '0');
     this.createdAt = Number(fields.createdAt ?? Date.now());
+    this.live = fields.live === true;
+    this.liveAt = Number(fields.liveAt ?? 0);
+    this.recoveringAt = Number(fields.recoveringAt ?? 0);
   }
 
   static address(value) {
@@ -40,6 +43,9 @@ export class RouteRecord {
       tableId: this.tableId,
       backgroundTableId: this.backgroundTableId,
       createdAt: this.createdAt,
+      live: this.live,
+      liveAt: this.liveAt,
+      recoveringAt: this.recoveringAt,
     };
   }
 }

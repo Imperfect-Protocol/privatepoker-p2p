@@ -28,13 +28,17 @@ export class LobbyRouteKeeper {
     this.store = fields.store ?? new RouteStore({
       storageKey: `${this.broadcastPrefix}:routes`,
       routeTtlMs: fields.routeTtlMs,
+      liveRouteTtlMs: fields.liveRouteTtlMs,
     });
     this.pendingRoutes = new Map();
     this.activeLabels = new Map();
+    this.liveRecords = new Map();
     this.reconnectTimers = new Map();
+    this.liveHeartbeatTimer = null;
     this.host = null;
     this.presenceLabel = `lobby-presence:${this.ownerAddress}:${this.lobbyId}:${this.backgroundTableId}`;
     this.reconnectDelayMs = Number(fields.reconnectDelayMs ?? 1_000);
+    this.liveHeartbeatMs = Number(fields.liveHeartbeatMs ?? 1_000);
     this.started = false;
   }
 
@@ -52,14 +56,22 @@ export class LobbyRouteKeeper {
 
   stop() {
     this.activeLabels.forEach((record) => {
+      this.store.markRecovering(record);
+    });
+    this.activeLabels.forEach((record) => {
       this.host?.unsubscribe(RouteLabels.subscription(record));
     });
     this.reconnectTimers.forEach((timer) => {
       this.host?.runtime.clearTimer(timer);
     });
+    if (this.liveHeartbeatTimer) {
+      this.host?.runtime.clearTimer(this.liveHeartbeatTimer);
+      this.liveHeartbeatTimer = null;
+    }
     this.host?.controlBus.unregisterPresence({ subscriptionLabel: this.presenceLabel });
     this.host?.controlBus.close();
     this.activeLabels.clear();
+    this.liveRecords.clear();
     this.pendingRoutes.clear();
     this.reconnectTimers.clear();
     this.bus.close();
@@ -79,7 +91,7 @@ export class LobbyRouteKeeper {
     if (!route?.peerAddress) return false;
     const pending = this.pendingRoutes.get(RouteRecord.address(route.peerAddress));
     if (pending) return true;
-    return this.store.hasPeerRoute({
+    return this.store.hasLivePeerRoute({
       ownerAddress: this.ownerAddress,
       peerAddress: route.peerAddress,
       lobbyId: route.lobbyId ?? this.lobbyId,
@@ -163,13 +175,32 @@ export class LobbyRouteKeeper {
       ?? this.activeLabels.get(RouteRecord.address(event.peerAddress));
     if (!record) return;
     this.clearReconnect(record);
-    this.store.remember(record);
+    this.liveRecords.set(record.peerAddress, record);
+    this.startLiveHeartbeat();
+    this.store.markLive(record);
   }
 
   recoverRoute(event) {
     const record = this.activeLabels.get(RouteRecord.address(event.peerAddress));
     if (!record) return;
+    this.liveRecords.delete(record.peerAddress);
+    this.store.markRecovering(record);
     this.scheduleReconnect(record);
+  }
+
+  startLiveHeartbeat() {
+    if (this.liveHeartbeatTimer || !this.started) return;
+    this.liveHeartbeatTimer = this.host.runtime.setTimer(() => {
+      this.liveHeartbeatTimer = null;
+      this.refreshLiveRoutes();
+      this.startLiveHeartbeat();
+    }, this.liveHeartbeatMs);
+  }
+
+  refreshLiveRoutes() {
+    this.liveRecords.forEach((record) => {
+      this.store.markLive(record);
+    });
   }
 
   scheduleReconnect(record) {

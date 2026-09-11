@@ -93,6 +93,19 @@ test('connection attempt moves to timeout state through the single timeout path'
   assert.equal(subscription.timeoutEvents, 1);
 });
 
+test('connection attempt can wait for peer human without timing out', () => {
+  const subscription = new TestSubscription(false);
+  const runtime = new TestRuntime();
+  const stateMachine = new ConnectionAttemptStateMachine(subscription, runtime);
+
+  stateMachine.start();
+  stateMachine.peerWaiting();
+
+  assert.equal(subscription.state, ConnectionState.PEER_WAITING);
+  assert.equal(runtime.timers.some((timer) => timer.active), false);
+  assert.equal(subscription.timeoutEvents, 0);
+});
+
 test('connection attempt has named connected and failed final states', () => {
   const subscription = new TestSubscription(false);
   const runtime = new TestRuntime();

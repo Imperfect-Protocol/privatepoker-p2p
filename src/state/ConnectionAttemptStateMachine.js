@@ -21,6 +21,11 @@ export class ConnectionAttemptStateMachine {
     this.transition(ConnectionState.PEER_CONNECTED);
   }
 
+  peerWaiting() {
+    this.clearTimer();
+    this.transition(ConnectionState.PEER_WAITING);
+  }
+
   timedOut() {
     const timedOutState = this.state;
     this.clearTimer();

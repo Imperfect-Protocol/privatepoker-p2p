@@ -126,7 +126,25 @@ test('known p2p route takes priority over mesh fallback memory', () => {
 test('mesh fallback memory applies only when no p2p route is known', () => {
   const network = new TestNetwork({
     connectedPeers: false,
-    meshFirst: true,
+    meshFirst: false,
+  });
+  const subscription = new VirtualSubscription({
+    network,
+    subscriptionLabel: 'inbound',
+    channelLabel: 'outbound',
+    peerAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    timeout: 10_000,
+    lobbyId: '1',
+    tableId: '7',
+  });
+
+  assert.equal(subscription.shouldTryMeshNodeFirst(), true);
+});
+
+test('missing p2p route starts through mesh on the first attempt', () => {
+  const network = new TestNetwork({
+    connectedPeers: false,
+    meshFirst: false,
   });
   const subscription = new VirtualSubscription({
     network,

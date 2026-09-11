@@ -31,6 +31,14 @@ class TestStore {
     this.remembered.push(record);
   }
 
+  markLive(record) {
+    this.remembered.push(record);
+  }
+
+  markRecovering(record) {
+    this.recovering = record;
+  }
+
   forget(record) {
     this.forgotten.push(record);
   }
@@ -57,6 +65,14 @@ class TestRuntime {
     timer.active = false;
     timer.callback();
   }
+
+  fireNewestTimer() {
+    const activeTimers = this.timers.filter((candidate) => candidate.active);
+    const timer = activeTimers[activeTimers.length - 1];
+    assert.ok(timer);
+    timer.active = false;
+    timer.callback();
+  }
 }
 
 test('lobby route keeper preserves route intent and reconnects instead of forgetting', () => {
@@ -72,6 +88,7 @@ test('lobby route keeper preserves route intent and reconnects instead of forget
       store,
       meshUrls: [],
       reconnectDelayMs: 25,
+      liveHeartbeatMs: 25,
     },
   );
 
@@ -101,10 +118,11 @@ test('lobby route keeper preserves route intent and reconnects instead of forget
     type: 'ConnectionTimeout',
     peerAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
   });
-  runtime.fireTimer();
+  runtime.fireNewestTimer();
 
   assert.equal(subscribeCount, 2);
   assert.equal(store.remembered.length, 1);
+  assert.equal(store.recovering.peerAddress, '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
   assert.equal(store.forgotten.length, 0);
   assert.ok(events.some((event) => event.step === 'PreserveRouteAccepted'));
   keeper.stop();

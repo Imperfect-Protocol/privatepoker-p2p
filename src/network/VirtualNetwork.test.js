@@ -146,3 +146,27 @@ test('subscribe adds a second scoped connection without killing existing p2p tra
   assert.equal(peerSession.closed, false);
   assert.equal(host.subscriptions.size, 2);
 });
+
+test('lobby route answers table p2p announce with peer waiting message', () => {
+  const host = makeHost();
+  host.config.role = 'lobby';
+  const responses = [];
+  host.broadcastControl = (message) => responses.push(message);
+  host.respondPeerWaitingWhenLobbyRouteFound({
+    type: 'p2p-mst-announce',
+    from: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    senderRole: 'table',
+    targetRole: 'table',
+    initiatorInstanceId: 'table-instance',
+    subscriptionLabel: 'inbound',
+    channelLabel: 'outbound',
+    lobbyId: '1',
+    tableId: '7',
+  });
+
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].type, 'p2p-peer-waiting');
+  assert.equal(responses[0].targetRole, 'table');
+  assert.equal(responses[0].targetInstanceId, 'table-instance');
+});

@@ -10,6 +10,10 @@ export class VirtualNetworkEvent {
     return new VirtualNetworkEvent(VirtualNetworkEventType.PEER_CONNECTED, fields);
   }
 
+  static peerWaiting(fields) {
+    return new VirtualNetworkEvent(VirtualNetworkEventType.PEER_WAITING, fields);
+  }
+
   static connectionTimeout(fields) {
     return new VirtualNetworkEvent(VirtualNetworkEventType.CONNECTION_TIMEOUT, fields);
   }

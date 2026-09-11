@@ -158,8 +158,10 @@ export class VirtualNetworkHost {
 
     if (message.type === 'mesh-announce') this.handleMeshAnnounce(message);
     if (message.type === 'p2p-mst-announce') this.handleP2PAnnounce(message);
+    if (message.type === 'p2p-peer-waiting') this.handleP2PPeerWaiting(message);
     if (message.type === 'sdp-offer') void this.handleSdpOffer(message);
     if (message.type === 'sdp-answer') void this.handleSdpAnswer(message);
+    this.respondPeerWaitingWhenLobbyRouteFound(message);
 
     if (message.to !== this.address.toString() && message.ttl > 1) {
       this.sendControlToConnectedPeers(ControlMessage.create(
@@ -221,6 +223,47 @@ export class VirtualNetworkHost {
         targetInstanceId: message.initiatorInstanceId,
       },
     );
+  }
+
+  handleP2PPeerWaiting(message) {
+    if (message.to !== this.address.toString()) return;
+    if (!this.acceptsControlTarget(message)) return;
+    const subscription = this.findSubscriptionByMessage(message);
+    if (!subscription) return;
+    subscription.handlePeerWaiting(message);
+  }
+
+  respondPeerWaitingWhenLobbyRouteFound(message) {
+    if (this.config.role !== 'lobby') return;
+    if (message.type !== 'p2p-mst-announce') return;
+    if (message.to !== this.address.toString()) return;
+    if (message.targetRole === this.config.role) return;
+    this.broadcastControl({
+      type: 'p2p-peer-waiting',
+      from: this.address.toString(),
+      to: message.from,
+      senderRole: this.config.role,
+      targetRole: message.senderRole,
+      targetInstanceId: message.initiatorInstanceId,
+      subscriptionLabel: message.subscriptionLabel,
+      channelLabel: message.channelLabel,
+      via: 'p2p',
+      flowId: message.flowId,
+      lobbyId: message.lobbyId,
+      tableId: message.tableId,
+      waitingReason: 'destination-browser-reachable-table-endpoint-not-ready',
+    });
+    this.emitConnectionStep({
+      step: ConnectionStep.ROUTE_AVAILABLE,
+      via: 'p2p',
+      flowId: message.flowId,
+      from: message.from,
+      to: message.to,
+      targetRole: message.targetRole,
+      lobbyId: message.lobbyId,
+      tableId: message.tableId,
+      peerAddress: message.from,
+    });
   }
 
   async sendOffer(peerAddress, subscriptionLabel, channelLabel, via, flowId = '', lobbyId = undefined, tableId = undefined, control = {}) {

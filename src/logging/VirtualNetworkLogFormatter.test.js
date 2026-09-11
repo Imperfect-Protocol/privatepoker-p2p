@@ -69,3 +69,13 @@ test('log formatter shows connection replacement explicitly', () => {
 
   assert.equal(line, '[BB] .. Replacing Connection');
 });
+
+test('log formatter shows peer waiting explicitly', () => {
+  const line = VirtualNetworkLogFormatter.text('0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', {
+    type: 'PeerWaiting',
+    tableId: '7',
+    peerAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  });
+
+  assert.equal(line, '[BB] .. Peer Waiting');
+});

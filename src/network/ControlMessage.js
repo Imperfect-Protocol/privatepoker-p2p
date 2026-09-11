@@ -18,6 +18,7 @@ export class ControlMessage {
     this.via = fields.via;
     this.flowId = fields.flowId;
     this.sdp = fields.sdp;
+    this.waitingReason = fields.waitingReason;
     this.ttl = fields.ttl;
   }
 
