@@ -13,6 +13,8 @@ import { ControlMessage } from './ControlMessage.js';
 import { ConnectionMemory } from './ConnectionMemory.js';
 import { ConnectionStep } from '../events/ConnectionStep.js';
 import { ConnectionState } from '../state/ConnectionState.js';
+import { VirtualControlBus } from './VirtualControlBus.js';
+import { SubscriptionScope } from './SubscriptionScope.js';
 
 export class VirtualNetworkHost {
   constructor(handlerFunction, address, privateKey, config = new VirtualNetworkConfig(), runtime = new VirtualNetworkRuntime()) {
@@ -21,6 +23,7 @@ export class VirtualNetworkHost {
     this.privateKey = privateKey;
     this.config = config instanceof VirtualNetworkConfig ? config : new VirtualNetworkConfig(config);
     this.runtime = runtime;
+    this.instanceId = this.runtime.crypto.randomUUID();
     this.subscriptions = new Map();
     this.channels = new Map();
     this.connectedSubscriptions = new Map();
@@ -28,12 +31,23 @@ export class VirtualNetworkHost {
     this.connectionMemory = new ConnectionMemory();
     this.p2pNetwork = new P2PScatterNetwork(this);
     this.meshNetwork = new MeshNetwork(this);
-    this.controlBus = this.openControlBus();
+    this.controlBus = new VirtualControlBus(this);
   }
 
   subscribe(subscriptionLabel, channelLabel, peerAddress, timeout, lobbyId = undefined, tableId = undefined) {
-    const existing = this.subscriptions.get(subscriptionLabel);
-    if (existing) this.unsubscribe(subscriptionLabel);
+    const subscriptionFields = {
+      subscriptionLabel,
+      channelLabel,
+      peerAddress,
+      lobbyId: lobbyId ?? this.config.lobbyId,
+      tableId: tableId ?? this.config.tableId,
+    };
+    const scope = SubscriptionScope.from(subscriptionFields);
+    const existing = this.subscriptions.get(scope.subscriptionKey());
+    if (existing) {
+      existing.restart();
+      return Result.ok();
+    }
 
     const subscription = new VirtualSubscription({
       network: this,
@@ -41,27 +55,25 @@ export class VirtualNetworkHost {
       channelLabel,
       peerAddress,
       timeout,
-      lobbyId: lobbyId ?? this.config.lobbyId,
-      tableId: tableId ?? this.config.tableId,
+      lobbyId: subscriptionFields.lobbyId,
+      tableId: subscriptionFields.tableId,
     });
-    this.subscriptions.set(subscriptionLabel, subscription);
-    this.channels.set(channelLabel, new VirtualChannel(channelLabel, subscription, this));
+    this.subscriptions.set(scope.subscriptionKey(), subscription);
+    this.channels.set(scope.channelKey(), new VirtualChannel(channelLabel, subscription, this));
+    this.controlBus.register(subscription);
     subscription.start().catch((error) => subscription.stateMachine.failed(error));
     return Result.ok();
   }
 
   unsubscribe(subscriptionLabel) {
-    const subscription = this.subscriptions.get(subscriptionLabel);
-    if (!subscription) return Result.ok();
-    subscription.stop();
-    this.subscriptions.delete(subscriptionLabel);
-    this.channels.delete(subscription.channelLabel);
-    this.connectedSubscriptions.delete(subscription.peerAddress.toString());
+    this.findSubscriptionsByLabel(subscriptionLabel).forEach((subscription) => {
+      this.stopSubscription(subscription);
+    });
     return Result.ok();
   }
 
   send(channelLabel, message) {
-    const channel = this.channels.get(channelLabel);
+    const channel = this.findChannelByLabel(channelLabel);
     if (!channel) return Result.err(new Error(`Unknown channel ${channelLabel}.`));
     const p2pMessage = P2PMessage.from(message);
     const result = channel.send(p2pMessage.data);
@@ -92,26 +104,38 @@ export class VirtualNetworkHost {
     this.meshNetwork.reportConnected(subscription);
   }
 
-  hasConnectedPeers() {
-    return this.connectedSubscriptions.size > 0;
+  unregisterConnectedSubscription(subscription) {
+    const peerAddress = subscription.peerAddress.toString();
+    if (this.connectedSubscriptions.get(peerAddress) === subscription) {
+      this.connectedSubscriptions.delete(peerAddress);
+    }
   }
 
-  openControlBus() {
-    if (!this.runtime.BroadcastChannel) return null;
-    const controlBus = new this.runtime.BroadcastChannel(`${this.config.broadcastPrefix}:control`);
-    controlBus.onmessage = (event) => this.handleControlMessage(event.data);
-    return controlBus;
+  hasConnectedPeers(peerAddress = undefined, lobbyId = undefined, tableId = undefined) {
+    if (this.connectedSubscriptions.size > 0) return true;
+    if (!peerAddress) return false;
+    return this.config.knowsRoute(
+      Address.from(peerAddress).toString(),
+      String(lobbyId ?? this.config.lobbyId),
+      String(tableId ?? this.config.tableId),
+    );
   }
 
   broadcastControl(fields) {
-    const message = ControlMessage.create(fields, this.runtime, this.address.toString(), this.config.controlTtl);
+    const message = ControlMessage.create(
+      fields,
+      this.runtime,
+      this.address.toString(),
+      this.config.controlTtl,
+      this.instanceId,
+    );
     this.seenControlMessages.add(message.id);
     this.sendControlLocally(message);
     this.sendControlToConnectedPeers(message);
   }
 
   sendControlLocally(message) {
-    this.controlBus?.postMessage(message);
+    this.controlBus.post(message);
   }
 
   sendControlToConnectedPeers(message) {
@@ -119,13 +143,18 @@ export class VirtualNetworkHost {
     this.connectedSubscriptions.forEach((subscription) => {
       if (!subscription.peerSession?.isConnected()) return;
       subscription.peerSession.sendControl(message);
+      this.emitRelayedSignal(message, subscription);
     });
   }
 
-  handleControlMessage(message) {
-    if (!message || message.sender === this.address.toString()) return;
+  handleControlMessage(message, source = 'local') {
+    if (!message || message.senderInstanceId === this.instanceId) return;
     if (this.seenControlMessages.has(message.id)) return;
     this.seenControlMessages.add(message.id);
+    if (source === 'peer') {
+      this.emitReceivedSignal(message);
+      this.sendControlLocally(message);
+    }
 
     if (message.type === 'mesh-announce') this.handleMeshAnnounce(message);
     if (message.type === 'p2p-mst-announce') this.handleP2PAnnounce(message);
@@ -133,7 +162,13 @@ export class VirtualNetworkHost {
     if (message.type === 'sdp-answer') void this.handleSdpAnswer(message);
 
     if (message.to !== this.address.toString() && message.ttl > 1) {
-      this.sendControlToConnectedPeers(ControlMessage.create(message, this.runtime, this.address.toString(), this.config.controlTtl).nextHop(this.address.toString()));
+      this.sendControlToConnectedPeers(ControlMessage.create(
+        message,
+        this.runtime,
+        this.address.toString(),
+        this.config.controlTtl,
+        this.instanceId,
+      ).nextHop(this.address.toString(), this.instanceId));
     }
   }
 
@@ -152,6 +187,7 @@ export class VirtualNetworkHost {
 
   handleP2PAnnounce(message) {
     if (message.to !== this.address.toString()) return;
+    if (!this.acceptsControlTarget(message)) return;
     this.emitConnectionStep({
       step: ConnectionStep.ANNOUNCE_RECEIVED,
       via: 'p2p',
@@ -160,10 +196,34 @@ export class VirtualNetworkHost {
       lobbyId: message.lobbyId,
       tableId: message.tableId,
     });
-    void this.sendOffer(message.from, message.subscriptionLabel, message.channelLabel, 'p2p', message.flowId, message.lobbyId, message.tableId);
+    if (!this.shouldCreateP2POffer(message)) {
+      this.emitConnectionStep({
+        step: ConnectionStep.OFFER_SUPPRESSED,
+        via: 'p2p',
+        reason: 'simultaneous-p2p-announce',
+        from: message.from,
+        to: message.to,
+        lobbyId: message.lobbyId,
+        tableId: message.tableId,
+      });
+      return;
+    }
+    void this.sendOffer(
+      message.from,
+      message.subscriptionLabel,
+      message.channelLabel,
+      'p2p',
+      message.flowId,
+      message.lobbyId,
+      message.tableId,
+      {
+        targetRole: message.senderRole ?? message.targetRole,
+        targetInstanceId: message.initiatorInstanceId,
+      },
+    );
   }
 
-  async sendOffer(peerAddress, subscriptionLabel, channelLabel, via, flowId = '', lobbyId = undefined, tableId = undefined) {
+  async sendOffer(peerAddress, subscriptionLabel, channelLabel, via, flowId = '', lobbyId = undefined, tableId = undefined, control = {}) {
     const subscription = this.findOrCreateRemoteSubscription({
       from: peerAddress,
       subscriptionLabel,
@@ -171,10 +231,15 @@ export class VirtualNetworkHost {
       lobbyId: lobbyId ?? this.config.lobbyId,
       tableId: tableId ?? this.config.tableId,
     });
-    if (!subscription.canBeginNegotiation()) return;
+    if (!this.prepareOutgoingOffer(subscription, {
+      via,
+      flowId,
+      subscriptionLabel,
+      channelLabel,
+    })) return;
     const peerSession = this.createPeerSession(peerAddress);
     this.emitConnectionStep({
-      step: ConnectionStep.OFFER_CREATED,
+      step: ConnectionStep.OFFER_CREATING,
       via,
       flowId,
       subscriptionLabel,
@@ -199,6 +264,10 @@ export class VirtualNetworkHost {
       type: 'sdp-offer',
       from: this.address.toString(),
       to: Address.from(peerAddress).toString(),
+      senderRole: this.config.role,
+      targetRole: control.targetRole,
+      targetInstanceId: control.targetInstanceId,
+      responderInstanceId: this.instanceId,
       subscriptionLabel,
       channelLabel,
       via,
@@ -211,8 +280,9 @@ export class VirtualNetworkHost {
 
   async handleSdpOffer(message) {
     if (message.to !== this.address.toString()) return;
+    if (!this.acceptsControlTarget(message)) return;
     const subscription = this.findOrCreateRemoteSubscription(message);
-    if (!subscription.canBeginNegotiation()) return;
+    if (!this.prepareIncomingOffer(subscription, message)) return;
     this.emitConnectionStep({
       step: ConnectionStep.OFFER_RECEIVED,
       via: message.via,
@@ -225,6 +295,16 @@ export class VirtualNetworkHost {
     });
     const peerSession = this.createPeerSession(message.from);
     subscription.attachPeerSession(peerSession);
+    this.emitConnectionStep({
+      step: ConnectionStep.ANSWER_CREATING,
+      via: message.via,
+      flowId: message.flowId,
+      subscriptionLabel: subscription.subscriptionLabel,
+      channelLabel: subscription.channelLabel,
+      lobbyId: subscription.lobbyId,
+      tableId: subscription.tableId,
+      peerAddress: subscription.peerAddress.toString(),
+    });
     const answer = await peerSession.acceptOffer({ type: 'offer', sdp: message.sdp });
     this.emitConnectionStep({
       step: ConnectionStep.ANSWER_SENT,
@@ -240,8 +320,11 @@ export class VirtualNetworkHost {
       type: 'sdp-answer',
       from: this.address.toString(),
       to: message.from,
+      senderRole: this.config.role,
+      targetInstanceId: message.responderInstanceId,
       subscriptionLabel: subscription.subscriptionLabel,
       channelLabel: subscription.channelLabel,
+      via: message.via,
       flowId: message.flowId,
       lobbyId: subscription.lobbyId,
       tableId: subscription.tableId,
@@ -251,7 +334,8 @@ export class VirtualNetworkHost {
 
   async handleSdpAnswer(message) {
     if (message.to !== this.address.toString()) return;
-    const subscription = this.subscriptions.get(message.subscriptionLabel);
+    if (!this.acceptsControlTarget(message)) return;
+    const subscription = this.findSubscriptionByMessage(message);
     if (!subscription) return;
     if (subscription.state === ConnectionState.PEER_CONNECTED) return;
     this.emitConnectionStep({
@@ -270,9 +354,14 @@ export class VirtualNetworkHost {
   }
 
   async handleMeshTriggerOffer(message, enqueue) {
-    const subscription = this.findSubscriptionByPeer(message.target);
+    const subscription = this.findSubscriptionByPeer(message.target, message.lobbyId, message.tableId);
     if (!subscription) return;
-    if (!subscription.canBeginNegotiation()) return;
+    if (!this.prepareOutgoingOffer(subscription, {
+      via: 'mesh',
+      flowId: message.flowId,
+      subscriptionLabel: subscription.subscriptionLabel,
+      channelLabel: subscription.channelLabel,
+    })) return;
     this.emitConnectionStep({
       step: ConnectionStep.ANNOUNCE_RECEIVED,
       via: 'mesh',
@@ -291,6 +380,14 @@ export class VirtualNetworkHost {
     });
     const peerSession = this.createPeerSession(message.target);
     subscription.attachPeerSession(peerSession);
+    this.emitConnectionStep({
+      step: ConnectionStep.OFFER_CREATING,
+      via: 'mesh',
+      flowId: message.flowId,
+      lobbyId: message.lobbyId,
+      tableId: message.tableId,
+      peerAddress: subscription.peerAddress.toString(),
+    });
     const offer = await peerSession.createOffer();
     this.emitConnectionStep({
       step: ConnectionStep.OFFER_SENT,
@@ -311,7 +408,10 @@ export class VirtualNetworkHost {
       lobbyId: message.lobbyId,
       tableId: message.tableId,
     });
-    if (!subscription.canBeginNegotiation()) return;
+    if (!this.prepareIncomingOffer(subscription, {
+      ...message,
+      via: 'mesh',
+    })) return;
     this.emitConnectionStep({
       step: ConnectionStep.OFFER_RECEIVED,
       via: 'mesh',
@@ -324,6 +424,16 @@ export class VirtualNetworkHost {
     });
     const peerSession = this.createPeerSession(message.from);
     subscription.attachPeerSession(peerSession);
+    this.emitConnectionStep({
+      step: ConnectionStep.ANSWER_CREATING,
+      via: 'mesh',
+      flowId: message.flowId,
+      subscriptionLabel: subscription.subscriptionLabel,
+      channelLabel: subscription.channelLabel,
+      lobbyId: subscription.lobbyId,
+      tableId: subscription.tableId,
+      peerAddress: subscription.peerAddress.toString(),
+    });
     const answer = await peerSession.acceptOffer({ type: 'offer', sdp: message.sdp });
     this.emitConnectionStep({
       step: ConnectionStep.ANSWER_SENT,
@@ -339,7 +449,7 @@ export class VirtualNetworkHost {
   }
 
   async handleMeshAnswer(message) {
-    const subscription = this.findSubscriptionByPeer(message.from);
+    const subscription = this.findSubscriptionByPeer(message.from, message.lobbyId, message.tableId);
     if (!subscription) return;
     this.emitConnectionStep({
       step: ConnectionStep.ANSWER_RECEIVED,
@@ -357,7 +467,7 @@ export class VirtualNetworkHost {
   }
 
   handleMeshRouteAvailable(message) {
-    const subscription = this.findSubscriptionByPeer(message.target);
+    const subscription = this.findSubscriptionByPeer(message.target, message.lobbyId, message.tableId);
     if (!subscription) return;
     if (!subscription.canBeginNegotiation()) return;
     this.emitConnectionStep({
@@ -371,16 +481,26 @@ export class VirtualNetworkHost {
     void this.p2pNetwork.findPeer(subscription);
   }
 
-  findSubscriptionByPeer(peerAddress) {
+  findSubscriptionByPeer(peerAddress, lobbyId = undefined, tableId = undefined) {
     const address = Address.from(peerAddress).toString();
     for (const subscription of this.subscriptions.values()) {
-      if (subscription.peerAddress.toString() === address) return subscription;
+      if (subscription.peerAddress.toString() !== address) continue;
+      if (lobbyId !== undefined && subscription.lobbyId !== String(lobbyId)) continue;
+      if (tableId !== undefined && subscription.tableId !== String(tableId)) continue;
+      return subscription;
     }
     return null;
   }
 
   findOrCreateRemoteSubscription(message) {
-    const existing = this.subscriptions.get(message.subscriptionLabel);
+    const scope = SubscriptionScope.from({
+      subscriptionLabel: message.subscriptionLabel,
+      channelLabel: message.channelLabel,
+      peerAddress: message.from,
+      lobbyId: message.lobbyId ?? this.config.lobbyId,
+      tableId: message.tableId ?? this.config.tableId,
+    });
+    const existing = this.subscriptions.get(scope.subscriptionKey());
     if (existing) return existing;
 
     const subscription = new VirtualSubscription({
@@ -392,9 +512,69 @@ export class VirtualNetworkHost {
       lobbyId: message.lobbyId ?? this.config.lobbyId,
       tableId: message.tableId ?? this.config.tableId,
     });
-    this.subscriptions.set(message.subscriptionLabel, subscription);
-    this.channels.set(message.channelLabel, new VirtualChannel(message.channelLabel, subscription, this));
+    this.subscriptions.set(scope.subscriptionKey(), subscription);
+    this.channels.set(scope.channelKey(), new VirtualChannel(message.channelLabel, subscription, this));
+    this.controlBus.register(subscription);
     return subscription;
+  }
+
+  findSubscriptionByMessage(message) {
+    const scope = SubscriptionScope.from({
+      subscriptionLabel: message.subscriptionLabel,
+      channelLabel: message.channelLabel,
+      peerAddress: message.from,
+      lobbyId: message.lobbyId ?? this.config.lobbyId,
+      tableId: message.tableId ?? this.config.tableId,
+    });
+    return this.subscriptions.get(scope.subscriptionKey()) ?? null;
+  }
+
+  findSubscriptionsByLabel(subscriptionLabel) {
+    return Array.from(this.subscriptions.values()).filter((subscription) => (
+      subscription.subscriptionLabel === subscriptionLabel
+    ));
+  }
+
+  findChannelByLabel(channelLabel) {
+    for (const channel of this.channels.values()) {
+      if (channel.label !== channelLabel) continue;
+      if (channel.subscription.peerSession?.isConnected()) return channel;
+    }
+    for (const channel of this.channels.values()) {
+      if (channel.label === channelLabel) return channel;
+    }
+    return null;
+  }
+
+  stopSubscription(subscription) {
+    subscription.stop();
+    this.controlBus.unregister(subscription);
+    this.subscriptions.delete(subscription.scope().subscriptionKey());
+    this.channels.delete(subscription.scope().channelKey());
+    this.connectedSubscriptions.delete(subscription.peerAddress.toString());
+  }
+
+  prepareIncomingOffer(subscription, message) {
+    if (subscription.canBeginNegotiation()) return true;
+    if (subscription.state === ConnectionState.PEER_CONNECTED && subscription.tableId === '0') return false;
+    if (subscription.state !== ConnectionState.PEER_CONNECTED && subscription.peerSession?.isConnected()) return false;
+    this.emitConnectionStep({
+      step: ConnectionStep.REPLACING_CONNECTION,
+      via: message.via,
+      flowId: message.flowId,
+      subscriptionLabel: subscription.subscriptionLabel,
+      channelLabel: subscription.channelLabel,
+      lobbyId: subscription.lobbyId,
+      tableId: subscription.tableId,
+      peerAddress: subscription.peerAddress.toString(),
+    });
+    subscription.replaceForOffer(message.via);
+    return true;
+  }
+
+  prepareOutgoingOffer(subscription, message) {
+    if (subscription.canBeginNegotiation()) return true;
+    return false;
   }
 
   createPeerSession(peerAddress) {
@@ -406,7 +586,59 @@ export class VirtualNetworkHost {
       runtime: this.runtime,
       iceGatheringTimeoutMs: this.config.iceGatheringTimeoutMs,
     });
-    peerSession.onControl = (message) => this.handleControlMessage(message);
+    peerSession.onControl = (message) => this.handleControlMessage(message, 'peer');
     return peerSession;
+  }
+
+  acceptsControlTarget(message) {
+    if (message.targetRole && message.targetRole !== this.config.role) return false;
+    if (message.targetInstanceId && message.targetInstanceId !== this.instanceId) return false;
+    return true;
+  }
+
+  emitRelayedSignal(message, subscription) {
+    if (!this.isSessionDescriptionSignal(message)) return;
+    this.emitConnectionStep({
+      step: ConnectionStep.SIGNAL_RELAYED,
+      via: 'p2p',
+      direction: 'outbound',
+      messageType: message.type,
+      from: message.from,
+      to: message.to,
+      targetRole: message.targetRole,
+      lobbyId: message.lobbyId,
+      tableId: message.tableId,
+      peerAddress: subscription.peerAddress.toString(),
+    });
+    this.handler(VirtualNetworkEvent.messageDelivered({
+      channelLabel: subscription.channelLabel,
+      lobbyId: subscription.lobbyId,
+      tableId: subscription.tableId,
+      peerAddress: subscription.peerAddress.toString(),
+      messageData: message,
+    }));
+  }
+
+  emitReceivedSignal(message) {
+    if (!this.isSessionDescriptionSignal(message)) return;
+    this.handler(VirtualNetworkEvent.messageReceived({
+      subscriptionLabel: message.subscriptionLabel,
+      lobbyId: message.lobbyId,
+      tableId: message.tableId,
+      peerAddress: message.from,
+      messageData: message,
+    }));
+  }
+
+  isSessionDescriptionSignal(message) {
+    return message.type === 'sdp-offer' || message.type === 'sdp-answer';
+  }
+
+  shouldCreateP2POffer(message) {
+    const subscription = this.findSubscriptionByMessage(message);
+    if (!subscription) return true;
+    if (subscription.peerAddress.toString() !== Address.from(message.from).toString()) return true;
+    if (subscription.state !== ConnectionState.TRY_P2P_NETWORK) return true;
+    return this.address.toString() < Address.from(message.from).toString();
   }
 }

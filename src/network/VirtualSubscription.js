@@ -4,6 +4,7 @@ import { VirtualNetworkEvent } from '../events/VirtualNetworkEvent.js';
 import { ConnectionState } from '../state/ConnectionState.js';
 import { ConnectionAttemptStateMachine } from '../state/ConnectionAttemptStateMachine.js';
 import { ConnectionStep } from '../events/ConnectionStep.js';
+import { SubscriptionScope } from './SubscriptionScope.js';
 
 export class VirtualSubscription {
   constructor(fields) {
@@ -24,8 +25,39 @@ export class VirtualSubscription {
     return !this.peerSession && this.state !== ConnectionState.PEER_CONNECTED;
   }
 
+  scope() {
+    return SubscriptionScope.from({
+      subscriptionLabel: this.subscriptionLabel,
+      channelLabel: this.channelLabel,
+      peerAddress: this.peerAddress,
+      lobbyId: this.lobbyId,
+      tableId: this.tableId,
+    });
+  }
+
+  matches(fields) {
+    return SubscriptionScope.from(fields).matches(this);
+  }
+
+  canRestart() {
+    return (
+      !this.peerSession
+      && [
+        ConnectionState.INITIAL,
+        ConnectionState.CONNECTION_TIMEOUT,
+        ConnectionState.FAILED,
+        ConnectionState.DISCONNECTED,
+      ].includes(this.state)
+    );
+  }
+
+  hasP2PRoute() {
+    return this.network.hasConnectedPeers(this.peerAddress, this.lobbyId, this.tableId);
+  }
+
   shouldTryMeshNodeFirst() {
-    return this.timedOutOnce || this.network.shouldUseMeshFirst(this.peerAddress) || !this.network.hasConnectedPeers();
+    if (this.hasP2PRoute()) return false;
+    return this.timedOutOnce || this.network.shouldUseMeshFirst(this.peerAddress);
   }
 
   rememberTimeout(timedOutState = this.state) {
@@ -66,12 +98,13 @@ export class VirtualSubscription {
 
   attachPeerSession(peerSession) {
     this.peerSession = peerSession;
-    this.peerSession.onConnected = () => this.handleConnected();
-    this.peerSession.onDisconnected = () => this.handleDisconnected();
-    this.peerSession.onMessage = (message) => this.handleMessage(message);
+    this.peerSession.onConnected = () => this.handleConnected(peerSession);
+    this.peerSession.onDisconnected = () => this.handleDisconnected(peerSession);
+    this.peerSession.onMessage = (message) => this.handleMessage(peerSession, message);
   }
 
-  handleConnected() {
+  handleConnected(peerSession) {
+    if (!this.isCurrentPeerSession(peerSession)) return;
     this.stateMachine.connected();
     this.network.registerConnectedSubscription(this);
     this.network.handler(VirtualNetworkEvent.peerConnected({
@@ -84,8 +117,11 @@ export class VirtualSubscription {
     }));
   }
 
-  handleDisconnected() {
+  handleDisconnected(peerSession) {
+    if (!this.isCurrentPeerSession(peerSession)) return;
+    this.peerSession = null;
     this.stateMachine.disconnected();
+    this.network.unregisterConnectedSubscription(this);
     this.network.handler(VirtualNetworkEvent.peerDisconnected({
       state: ConnectionState.DISCONNECTED,
       subscriptionLabel: this.subscriptionLabel,
@@ -96,7 +132,8 @@ export class VirtualSubscription {
     }));
   }
 
-  handleMessage(message) {
+  handleMessage(peerSession, message) {
+    if (!this.isCurrentPeerSession(peerSession)) return;
     this.network.handler(VirtualNetworkEvent.messageReceived({
       subscriptionLabel: this.subscriptionLabel,
       lobbyId: this.lobbyId,
@@ -135,11 +172,32 @@ export class VirtualSubscription {
 
   stop() {
     this.stateMachine.disconnected();
+    this.network.unregisterConnectedSubscription(this);
     this.abortNegotiation();
   }
 
+  replaceForOffer(via) {
+    this.network.unregisterConnectedSubscription(this);
+    this.abortNegotiation();
+    this.stateMachine.clearTimer();
+    this.stateMachine.transition(via === 'p2p'
+      ? ConnectionState.TRY_P2P_NETWORK
+      : ConnectionState.TRY_MESH_NODE);
+    this.stateMachine.armTimeout();
+  }
+
+  restart() {
+    if (!this.canRestart()) return;
+    this.start().catch((error) => this.stateMachine.failed(error));
+  }
+
+  isCurrentPeerSession(peerSession) {
+    return this.peerSession === peerSession;
+  }
+
   abortNegotiation() {
-    this.peerSession?.close();
+    const peerSession = this.peerSession;
     this.peerSession = null;
+    peerSession?.close();
   }
 }

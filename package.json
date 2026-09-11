@@ -12,6 +12,8 @@
     "./network/*": "./src/network/*.js",
     "./webrtc/*": "./src/webrtc/*.js",
     "./mesh/*": "./src/mesh/*.js",
+    "./logging/*": "./src/logging/*.js",
+    "./routes/*": "./src/routes/*.js",
     "./config/*": "./src/config/*.js",
     "./package.json": "./package.json"
   },

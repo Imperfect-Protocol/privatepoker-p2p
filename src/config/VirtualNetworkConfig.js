@@ -10,9 +10,20 @@ export class VirtualNetworkConfig {
       { urls: 'stun:stun.cloudflare.com:3478' },
     ];
     this.broadcastPrefix = fields.broadcastPrefix ?? 'privatepoker-p2p';
+    this.routeOracle = fields.routeOracle ?? null;
+    this.role = fields.role ?? 'peer';
   }
 
   rtcConfiguration() {
     return { iceServers: this.iceServers };
+  }
+
+  knowsRoute(peerAddress, lobbyId, tableId) {
+    if (!this.routeOracle) return false;
+    return Boolean(this.routeOracle({
+      peerAddress,
+      lobbyId,
+      tableId,
+    }));
   }
 }
