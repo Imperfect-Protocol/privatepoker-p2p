@@ -18,7 +18,7 @@ export class RouteStore {
   constructor(fields = {}) {
     this.storageKey = fields.storageKey ?? 'privatepoker-p2p:routes';
     this.routeTtlMs = Number(fields.routeTtlMs ?? 15 * 60 * 1000);
-    this.liveRouteTtlMs = Number(fields.liveRouteTtlMs ?? 3_000);
+    this.liveRouteTtlMs = Number(fields.liveRouteTtlMs ?? 120_000);
     this.storage = fields.storage ?? globalThis.localStorage ?? new MemoryRouteStorage();
   }
 
@@ -62,6 +62,26 @@ export class RouteStore {
     };
     this.write(records);
     return RouteRecord.from(records[record.peerKey()]);
+  }
+
+  markOwnerRecovering(fields) {
+    const ownerAddress = RouteRecord.address(fields.ownerAddress);
+    const lobbyId = String(fields.lobbyId ?? '');
+    const backgroundTableId = String(fields.backgroundTableId ?? '0');
+    const records = this.read();
+    const recoveredAt = Date.now();
+    Object.keys(records).forEach((key) => {
+      const record = RouteRecord.from(records[key]);
+      if (record.ownerAddress !== ownerAddress) return;
+      if (record.lobbyId !== lobbyId) return;
+      if (record.backgroundTableId !== backgroundTableId) return;
+      records[key] = {
+        ...records[key],
+        live: false,
+        recoveringAt: recoveredAt,
+      };
+    });
+    this.write(records);
   }
 
   forget(fields) {

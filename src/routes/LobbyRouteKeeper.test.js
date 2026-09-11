@@ -39,6 +39,10 @@ class TestStore {
     this.recovering = record;
   }
 
+  markOwnerRecovering(record) {
+    this.ownerRecovering = record;
+  }
+
   forget(record) {
     this.forgotten.push(record);
   }

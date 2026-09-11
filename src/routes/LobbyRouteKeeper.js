@@ -45,6 +45,11 @@ export class LobbyRouteKeeper {
   start() {
     if (this.started) return;
     this.started = true;
+    this.store.markOwnerRecovering({
+      ownerAddress: this.ownerAddress,
+      lobbyId: this.lobbyId,
+      backgroundTableId: this.backgroundTableId,
+    });
     this.bus.listen((message) => this.acceptRouteMessage(message));
     this.ensureHost();
     this.host.controlBus.registerPresence({
