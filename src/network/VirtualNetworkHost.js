@@ -107,6 +107,11 @@ export class VirtualNetworkHost {
   registerConnectedSubscription(subscription) {
     this.connectionMemory.rememberConnected(subscription.peerAddress.toString());
     this.connectedSubscriptions.set(subscription.peerAddress.toString(), subscription);
+
+    // Trigger Hebbian Reinforcement in Haar space on success!
+    const neighbors = this.getConnectedPeers?.() || [];
+    this.p2pNetwork.reinforceSuccess?.(subscription.peerAddress.toString(), neighbors);
+
     this.meshNetwork.reportConnected(subscription);
   }
 
