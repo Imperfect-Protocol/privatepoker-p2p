@@ -20,4 +20,12 @@ export class VirtualNetwork {
   send(channelLabel, message) {
     return this.#host.send(channelLabel, message);
   }
+
+  setLocalStream(stream) {
+    this.#host.setLocalStream(stream);
+  }
+
+  close() {
+    this.#host.close();
+  }
 }

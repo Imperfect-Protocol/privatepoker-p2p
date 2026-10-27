@@ -14,7 +14,11 @@ const virtualNet = new VirtualNetwork(handlerFunction, address, privateKey);
 virtualNet.subscribe('inbound', 'outbound', peerAddress, 10_000, lobbyId, tableId);
 virtualNet.unsubscribe('inbound');
 virtualNet.send('outbound', message);
+virtualNet.setLocalStream(mediaStream); // optional audio/video, null to stop
+virtualNet.close(); // releases peer connections, polling, worker and local bus
 ```
+
+Media tracks ride on the same `RTCPeerConnection` as the data channel. Renegotiation offers and answers are sent over the open data channel (perfect negotiation, higher address is polite), so no extra signalling is needed. Remote media arrives as a `MediaStream` event carrying `{ peerAddress, stream }`; it is re-emitted whenever tracks are added, removed, muted or ended.
 
 The caller does not know whether signalling used an existing P2P route, collaborative route discovery, or mesh fallback. The caller receives every state change and message through the single handler function.
 
@@ -30,6 +34,7 @@ The handler receives these event types:
 - `ConnectionFailed`
 - `ConnectionStep`
 - `MeshPollError`
+- `MediaStream`
 
 Connection protocol notifications are emitted as `ConnectionStep` events. The important step names are:
 

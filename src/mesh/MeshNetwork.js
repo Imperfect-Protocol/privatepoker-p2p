@@ -9,6 +9,11 @@ export class MeshNetwork {
     this.sessions = new Map();
   }
 
+  close() {
+    this.sessions.forEach((session) => session.stop());
+    this.sessions.clear();
+  }
+
   async findPeer(subscription) {
     if (this.network.config.meshUrls.length > 0) {
       this.network.emitConnectionStep({

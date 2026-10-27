@@ -11,4 +11,5 @@ export const VirtualNetworkEventType = Object.freeze({
   CONNECTION_FAILED: 'ConnectionFailed',
   CONNECTION_STEP: 'ConnectionStep',
   MESH_POLL_ERROR: 'MeshPollError',
+  MEDIA_STREAM: 'MediaStream',
 });

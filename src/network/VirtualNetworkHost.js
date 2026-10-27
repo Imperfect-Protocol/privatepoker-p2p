@@ -8,6 +8,7 @@ import { VirtualChannel } from './VirtualChannel.js';
 import { VirtualNetworkEvent } from '../events/VirtualNetworkEvent.js';
 import { WebRtcPeerSession } from '../webrtc/WebRtcPeerSession.js';
 import { P2PScatterNetwork } from './P2PScatterNetwork.js';
+import { NeuralHaarRoutingNetwork } from './NeuralHaarRoutingNetwork.js';
 import { MeshNetwork } from '../mesh/MeshNetwork.js';
 import { ControlMessage } from './ControlMessage.js';
 import { ConnectionMemory } from './ConnectionMemory.js';
@@ -29,12 +30,17 @@ export class VirtualNetworkHost {
     this.connectedSubscriptions = new Map();
     this.seenControlMessages = new Set();
     this.connectionMemory = new ConnectionMemory();
-    this.p2pNetwork = new P2PScatterNetwork(this);
+    // this.p2pNetwork = new P2PScatterNetwork(this);
+    this.p2pNetwork = new NeuralHaarRoutingNetwork(this);
+    this.p2pNetwork.start?.();
     this.meshNetwork = new MeshNetwork(this);
     this.controlBus = new VirtualControlBus(this);
+    this.localStream = null;
+    this.closed = false;
   }
 
   subscribe(subscriptionLabel, channelLabel, peerAddress, timeout, lobbyId = undefined, tableId = undefined) {
+    if (this.closed) return Result.err(new Error('Network is closed.'));
     const subscriptionFields = {
       subscriptionLabel,
       channelLabel,
@@ -101,6 +107,11 @@ export class VirtualNetworkHost {
   registerConnectedSubscription(subscription) {
     this.connectionMemory.rememberConnected(subscription.peerAddress.toString());
     this.connectedSubscriptions.set(subscription.peerAddress.toString(), subscription);
+
+    // Trigger Hebbian Reinforcement in Haar space on success!
+    const neighbors = this.getConnectedPeers?.() || [];
+    this.p2pNetwork.reinforceSuccess?.(subscription.peerAddress.toString(), neighbors);
+
     this.meshNetwork.reportConnected(subscription);
   }
 
@@ -109,6 +120,10 @@ export class VirtualNetworkHost {
     if (this.connectedSubscriptions.get(peerAddress) === subscription) {
       this.connectedSubscriptions.delete(peerAddress);
     }
+  }
+
+  getConnectedPeers() {
+    return Array.from(this.connectedSubscriptions.keys());
   }
 
   hasConnectedPeers(peerAddress = undefined, lobbyId = undefined, tableId = undefined) {
@@ -140,8 +155,14 @@ export class VirtualNetworkHost {
 
   sendControlToConnectedPeers(message) {
     if (message.ttl <= 0) return;
-    this.connectedSubscriptions.forEach((subscription) => {
+    this.connectedSubscriptions.forEach((subscription, peerAddress) => {
       if (!subscription.peerSession?.isConnected()) return;
+      
+      // Respect neural routing nextHop if specified
+      if (message.nextHop && Address.from(message.nextHop).toString() !== Address.from(peerAddress).toString()) {
+        return;
+      }
+
       subscription.peerSession.sendControl(message);
       this.emitRelayedSignal(message, subscription);
     });
@@ -157,6 +178,10 @@ export class VirtualNetworkHost {
     }
 
     if (message.type === 'mesh-announce') this.handleMeshAnnounce(message);
+    if (message.type === 'neural-haar-announce') this.handleP2PAnnounce({ ...message, type: 'p2p-mst-announce', });
+    if (message.type === 'neural-haar-gossip' && message.tensorSlice) {
+      this.p2pNetwork.gossipUpdate?.(new Float32Array(message.tensorSlice));
+    }
     if (message.type === 'p2p-mst-announce') this.handleP2PAnnounce(message);
     if (message.type === 'p2p-peer-waiting') this.handleP2PPeerWaiting(message);
     if (message.type === 'p2p-peer-waiting-accepted') this.handleP2PPeerWaitAccepted(message);
@@ -626,6 +651,17 @@ export class VirtualNetworkHost {
     return null;
   }
 
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.handler = () => {};
+    Array.from(this.subscriptions.values()).forEach((subscription) => this.stopSubscription(subscription));
+    this.p2pNetwork?.stop?.();
+    this.meshNetwork.close();
+    this.controlBus.close();
+    this.localStream = null;
+  }
+
   stopSubscription(subscription) {
     subscription.stop();
     this.controlBus.unregister(subscription);
@@ -667,7 +703,17 @@ export class VirtualNetworkHost {
       iceGatheringTimeoutMs: this.config.iceGatheringTimeoutMs,
     });
     peerSession.onControl = (message) => this.handleControlMessage(message, 'peer');
+    peerSession.onMediaStream = (stream) => this.handler(VirtualNetworkEvent.mediaStream({
+      peerAddress: peerSession.peerAddress,
+      stream,
+    }));
+    peerSession.setLocalStream(this.localStream);
     return peerSession;
+  }
+
+  setLocalStream(stream) {
+    this.localStream = stream;
+    this.subscriptions.forEach((subscription) => subscription.peerSession?.setLocalStream(stream));
   }
 
   acceptsControlTarget(message) {
