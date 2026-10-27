@@ -19,4 +19,11 @@ export class WebRtcEnvelope {
       messageData,
     });
   }
+
+  static media(messageData) {
+    return new WebRtcEnvelope({
+      kind: 'media',
+      messageData,
+    });
+  }
 }

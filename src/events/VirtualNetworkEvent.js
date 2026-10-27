@@ -53,4 +53,8 @@ export class VirtualNetworkEvent {
   static meshPollError(fields) {
     return new VirtualNetworkEvent(VirtualNetworkEventType.MESH_POLL_ERROR, fields);
   }
+
+  static mediaStream(fields) {
+    return new VirtualNetworkEvent(VirtualNetworkEventType.MEDIA_STREAM, fields);
+  }
 }

@@ -15,7 +15,7 @@ test('virtual network public surface stays tiny', () => {
   const network = new VirtualNetwork(() => {}, '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', new Uint8Array(32), {}, runtime);
   const methodNames = Object.getOwnPropertyNames(Object.getPrototypeOf(network)).filter((name) => name !== 'constructor');
 
-  assert.deepEqual(methodNames, ['subscribe', 'unsubscribe', 'send']);
+  assert.deepEqual(methodNames, ['subscribe', 'unsubscribe', 'send', 'setLocalStream', 'close']);
 });
 
 test('remote subscriptions created from incoming signals are registered with the control bus', () => {

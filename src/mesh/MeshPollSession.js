@@ -35,6 +35,7 @@ export class MeshPollSession {
       try {
         await this.pollOnce();
       } catch (error) {
+        if (this.stopped) break;
         if (!this.endpoints.rotate()) {
           this.network.handleMeshPollError(error);
           await this.sleep(1_000);
@@ -76,6 +77,7 @@ export class MeshPollSession {
   async deliver(body) {
     const messages = Array.isArray(body?.messages) ? body.messages : [];
     for (const message of messages) {
+      if (this.stopped) return;
       await this.network.handleMeshMessage(message, (reply) => this.enqueue(reply));
     }
   }
