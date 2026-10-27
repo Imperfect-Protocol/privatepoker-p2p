@@ -122,6 +122,10 @@ export class VirtualNetworkHost {
     }
   }
 
+  getConnectedPeers() {
+    return Array.from(this.connectedSubscriptions.keys());
+  }
+
   hasConnectedPeers(peerAddress = undefined, lobbyId = undefined, tableId = undefined) {
     if (this.connectedSubscriptions.size > 0) return true;
     if (!peerAddress) return false;
@@ -151,8 +155,14 @@ export class VirtualNetworkHost {
 
   sendControlToConnectedPeers(message) {
     if (message.ttl <= 0) return;
-    this.connectedSubscriptions.forEach((subscription) => {
+    this.connectedSubscriptions.forEach((subscription, peerAddress) => {
       if (!subscription.peerSession?.isConnected()) return;
+      
+      // Respect neural routing nextHop if specified
+      if (message.nextHop && Address.from(message.nextHop).toString() !== Address.from(peerAddress).toString()) {
+        return;
+      }
+
       subscription.peerSession.sendControl(message);
       this.emitRelayedSignal(message, subscription);
     });
