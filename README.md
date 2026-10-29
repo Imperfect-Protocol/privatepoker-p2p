@@ -1,11 +1,5 @@
 # P2P Network Library - Virtual Network over WebRTC
 
-**Author:** [Sonia Code](https://github.com/sadhbh-c0d3)
-
-*Copyright (c) 2026 Sonia Kolasinska / Imperfect Protocol. All Rights Reserved.*
-
----
-
 ## Usage
 
 ```js
