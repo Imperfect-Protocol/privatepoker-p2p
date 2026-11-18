@@ -1,5 +1,13 @@
 import { MeshEndpointSet } from './MeshEndpointSet.js';
 
+/**
+ * One mailbox poll session for a (lobby, table, peer) triple.
+ *
+ * The session keeps a long poll open at all times and sends queued outbound
+ * messages on a parallel request. The mesh server drains a mailbox when it
+ * answers, so cancelling an in-flight poll to send something new can silently
+ * drop messages that were already on the wire.
+ */
 export class MeshPollSession {
   constructor(fields) {
     this.network = fields.network;
@@ -7,8 +15,10 @@ export class MeshPollSession {
     this.tableId = fields.tableId;
     this.peer = fields.peer;
     this.endpoints = new MeshEndpointSet(fields.urls);
+    this.fetch = fields.fetch ?? ((url, options) => globalThis.fetch(url, options));
     this.queue = [];
-    this.currentAbort = null;
+    this.aborts = new Set();
+    this.flushing = false;
     this.stopped = false;
     this.started = false;
   }
@@ -22,12 +32,13 @@ export class MeshPollSession {
   enqueue(message) {
     if (!message || this.stopped) return;
     this.queue.push(message);
-    this.currentAbort?.abort();
+    void this.flush();
   }
 
   stop() {
     this.stopped = true;
-    this.currentAbort?.abort();
+    this.aborts.forEach((abort) => abort.abort());
+    this.aborts.clear();
   }
 
   async run() {
@@ -44,12 +55,28 @@ export class MeshPollSession {
     }
   }
 
+  /** Send queued messages now without cancelling the reader's long poll. */
+  async flush() {
+    if (this.stopped || this.flushing || this.queue.length === 0) return;
+    this.flushing = true;
+    let delivered = false;
+    try {
+      await this.pollOnce();
+      delivered = true;
+    } catch (error) {
+      if (!this.stopped && !this.endpoints.rotate()) this.network.handleMeshPollError(error);
+    } finally {
+      this.flushing = false;
+      if (delivered && !this.stopped && this.queue.length > 0) void this.flush();
+    }
+  }
+
   async pollOnce() {
     const outbound = this.queue.splice(0);
     const abort = new AbortController();
-    this.currentAbort = abort;
+    this.aborts.add(abort);
     try {
-      const response = await fetch(this.endpoints.current(), {
+      const response = await this.fetch(this.endpoints.current(), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         signal: abort.signal,
@@ -63,14 +90,11 @@ export class MeshPollSession {
       if (!response.ok) throw new Error(`private-mesh HTTP ${response.status}`);
       await this.deliver(await response.json().catch(() => null));
     } catch (error) {
-      if (error.name === 'AbortError') {
-        if (outbound.length > 0) this.queue.unshift(...outbound);
-      } else {
-        this.queue.unshift(...outbound);
-        throw error;
-      }
+      if (this.stopped && error.name === 'AbortError') return;
+      this.queue.unshift(...outbound);
+      throw error;
     } finally {
-      if (this.currentAbort === abort) this.currentAbort = null;
+      this.aborts.delete(abort);
     }
   }
 

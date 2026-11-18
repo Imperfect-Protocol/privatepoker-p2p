@@ -12,6 +12,7 @@ export class VirtualNetworkConfig {
     this.broadcastPrefix = fields.broadcastPrefix ?? 'privatepoker-p2p';
     this.routeOracle = fields.routeOracle ?? null;
     this.role = fields.role ?? 'peer';
+    this.neural = fields.neural ?? {};
   }
 
   rtcConfiguration() {

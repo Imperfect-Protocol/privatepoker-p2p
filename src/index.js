@@ -9,3 +9,5 @@ export { VirtualNetworkActivityBus } from './logging/VirtualNetworkActivityBus.j
 export { LobbyRouteKeeper } from './routes/LobbyRouteKeeper.js';
 export { RouteBus } from './routes/RouteBus.js';
 export { RouteStore } from './routes/RouteStore.js';
+export { NeuralRoutingConfig } from './neural/NeuralRoutingConfig.js';
+export { NeuralTrace } from './neural/NeuralTrace.js';

@@ -3,6 +3,19 @@ import { test } from 'node:test';
 
 import { VirtualNetwork } from './VirtualNetwork.js';
 import { VirtualNetworkHost } from './VirtualNetworkHost.js';
+import { ControlMessage } from './ControlMessage.js';
+
+test('control messages keep a neural bundle payload', () => {
+  const message = ControlMessage.create(
+    { type: 'neural-bundle', neural: { signals: [{ sequenceId: 1 }] } },
+    { crypto: globalThis.crypto },
+    '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    1,
+    'instance',
+  );
+
+  assert.deepEqual(message.toFields().neural, { signals: [{ sequenceId: 1 }] });
+});
 
 test('virtual network public surface stays tiny', () => {
   const runtime = {
@@ -59,6 +72,8 @@ class TestPeerSession {
   isConnected() {
     return !this.closed;
   }
+
+  sendControl() {}
 
   close() {
     this.closed = true;

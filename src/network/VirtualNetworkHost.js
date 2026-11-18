@@ -7,8 +7,7 @@ import { VirtualSubscription } from './VirtualSubscription.js';
 import { VirtualChannel } from './VirtualChannel.js';
 import { VirtualNetworkEvent } from '../events/VirtualNetworkEvent.js';
 import { WebRtcPeerSession } from '../webrtc/WebRtcPeerSession.js';
-import { P2PScatterNetwork } from './P2PScatterNetwork.js';
-import { NeuralHaarRoutingNetwork } from './NeuralHaarRoutingNetwork.js';
+import { NeuralRoutingNetwork } from './NeuralRoutingNetwork.js';
 import { MeshNetwork } from '../mesh/MeshNetwork.js';
 import { ControlMessage } from './ControlMessage.js';
 import { ConnectionMemory } from './ConnectionMemory.js';
@@ -16,6 +15,7 @@ import { ConnectionStep } from '../events/ConnectionStep.js';
 import { ConnectionState } from '../state/ConnectionState.js';
 import { VirtualControlBus } from './VirtualControlBus.js';
 import { SubscriptionScope } from './SubscriptionScope.js';
+import { VirtualNetworkConsoleLogger } from '../logging/VirtualNetworkConsoleLogger.js';
 
 export class VirtualNetworkHost {
   constructor(handlerFunction, address, privateKey, config = new VirtualNetworkConfig(), runtime = new VirtualNetworkRuntime()) {
@@ -30,9 +30,8 @@ export class VirtualNetworkHost {
     this.connectedSubscriptions = new Map();
     this.seenControlMessages = new Set();
     this.connectionMemory = new ConnectionMemory();
-    // this.p2pNetwork = new P2PScatterNetwork(this);
-    this.p2pNetwork = new NeuralHaarRoutingNetwork(this);
-    this.p2pNetwork.start?.();
+    this.p2pNetwork = new NeuralRoutingNetwork(this);
+    this.p2pNetwork.start();
     this.meshNetwork = new MeshNetwork(this);
     this.controlBus = new VirtualControlBus(this);
     this.localStream = null;
@@ -107,11 +106,7 @@ export class VirtualNetworkHost {
   registerConnectedSubscription(subscription) {
     this.connectionMemory.rememberConnected(subscription.peerAddress.toString());
     this.connectedSubscriptions.set(subscription.peerAddress.toString(), subscription);
-
-    // Trigger Hebbian Reinforcement in Haar space on success!
-    const neighbors = this.getConnectedPeers?.() || [];
-    this.p2pNetwork.reinforceSuccess?.(subscription.peerAddress.toString(), neighbors);
-
+    this.p2pNetwork.neighbourAdded(subscription.peerAddress.toString());
     this.meshNetwork.reportConnected(subscription);
   }
 
@@ -119,6 +114,7 @@ export class VirtualNetworkHost {
     const peerAddress = subscription.peerAddress.toString();
     if (this.connectedSubscriptions.get(peerAddress) === subscription) {
       this.connectedSubscriptions.delete(peerAddress);
+      this.p2pNetwork.neighbourRemoved(peerAddress);
     }
   }
 
@@ -146,6 +142,10 @@ export class VirtualNetworkHost {
     );
     this.seenControlMessages.add(message.id);
     this.sendControlLocally(message);
+    if (message.to && message.to !== this.address.toString()) {
+      this.p2pNetwork.sendTo(message.to, message.toFields());
+      return;
+    }
     this.sendControlToConnectedPeers(message);
   }
 
@@ -155,33 +155,78 @@ export class VirtualNetworkHost {
 
   sendControlToConnectedPeers(message) {
     if (message.ttl <= 0) return;
-    this.connectedSubscriptions.forEach((subscription, peerAddress) => {
+    this.connectedSubscriptions.forEach((subscription) => {
       if (!subscription.peerSession?.isConnected()) return;
-      
-      // Respect neural routing nextHop if specified
-      if (message.nextHop && Address.from(message.nextHop).toString() !== Address.from(peerAddress).toString()) {
-        return;
-      }
-
       subscription.peerSession.sendControl(message);
       this.emitRelayedSignal(message, subscription);
     });
   }
 
-  handleControlMessage(message, source = 'local') {
+  /** One encoded neural bundle to exactly one direct neighbour. */
+  sendNeuralBundle(neighbourAddress, bundle) {
+    const peerAddress = Address.from(neighbourAddress).toString();
+    const subscription = this.connectedSubscriptions.get(peerAddress);
+    if (!subscription?.peerSession?.isConnected()) {
+      VirtualNetworkConsoleLogger.log('neural.transport.unreachable', {
+        address: this.address.toString(),
+        peerAddress,
+        signals: bundle.signals.length,
+      });
+      return;
+    }
+    subscription.peerSession.sendControl(ControlMessage.create({
+      type: 'neural-bundle',
+      from: this.address.toString(),
+      to: peerAddress,
+      senderRole: this.config.role,
+      neural: bundle,
+    }, this.runtime, this.address.toString(), this.config.controlTtl, this.instanceId));
+  }
+
+  /** The overlay could not reach an active peer: reconnect it through the mesh. */
+  requestMeshFallback(targetAddress) {
+    const peerAddress = Address.from(targetAddress).toString();
+    if (this.connectedSubscriptions.has(peerAddress)) return;
+    const subscription = this.findSubscriptionByPeer(peerAddress);
+    if (!subscription) return;
+    VirtualNetworkConsoleLogger.log('neural.fallback.request', {
+      address: this.address.toString(),
+      peerAddress,
+      lobbyId: subscription.lobbyId,
+      tableId: subscription.tableId,
+    });
+    void this.meshNetwork.findPeer(subscription);
+  }
+
+  /** A decoded announce reached this node: run the addressed control message. */
+  deliverNeuralControl(payload, from) {
+    this.handleControlMessage(payload, 'peer', from);
+  }
+
+  handleControlMessage(message, source = 'local', immediateSender = undefined) {
     if (!message || message.senderInstanceId === this.instanceId) return;
     if (this.seenControlMessages.has(message.id)) return;
     this.seenControlMessages.add(message.id);
+
+    if (message.type === 'neural-bundle') {
+      if (source !== 'peer') return;
+      const sender = Address.from(immediateSender ?? message.sender ?? message.from).toString();
+      if (!this.connectedSubscriptions.has(sender)) return;
+      VirtualNetworkConsoleLogger.log('neural.transport.receive', {
+        address: this.address.toString(),
+        sender,
+        signals: message.neural?.signals?.length ?? 0,
+      });
+      this.p2pNetwork.receiveBundle(message.neural, sender);
+      return;
+    }
+
     if (source === 'peer') {
       this.emitReceivedSignal(message);
       this.sendControlLocally(message);
     }
 
     if (message.type === 'mesh-announce') this.handleMeshAnnounce(message);
-    if (message.type === 'neural-haar-announce') this.handleP2PAnnounce({ ...message, type: 'p2p-mst-announce', });
-    if (message.type === 'neural-haar-gossip' && message.tensorSlice) {
-      this.p2pNetwork.gossipUpdate?.(new Float32Array(message.tensorSlice));
-    }
     if (message.type === 'p2p-mst-announce') this.handleP2PAnnounce(message);
     if (message.type === 'p2p-peer-waiting') this.handleP2PPeerWaiting(message);
     if (message.type === 'p2p-peer-waiting-accepted') this.handleP2PPeerWaitAccepted(message);
@@ -189,16 +234,6 @@ export class VirtualNetworkHost {
     if (message.type === 'sdp-offer') void this.handleSdpOffer(message);
     if (message.type === 'sdp-answer') void this.handleSdpAnswer(message);
     this.respondPeerWaitingWhenLobbyRouteFound(message);
-
-    if (message.to !== this.address.toString() && message.ttl > 1) {
-      this.sendControlToConnectedPeers(ControlMessage.create(
-        message,
-        this.runtime,
-        this.address.toString(),
-        this.config.controlTtl,
-        this.instanceId,
-      ).nextHop(this.address.toString(), this.instanceId));
-    }
   }
 
   handleMeshAnnounce(message) {

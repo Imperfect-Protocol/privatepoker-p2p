@@ -21,6 +21,7 @@ export class ControlMessage {
     this.waitingReason = fields.waitingReason;
     this.decisionReason = fields.decisionReason;
     this.ttl = fields.ttl;
+    this.neural = fields.neural;
   }
 
   static create(fields, runtime, sender, ttl, senderInstanceId = undefined) {
@@ -31,6 +32,11 @@ export class ControlMessage {
       senderInstanceId,
       ttl: fields.ttl ?? ttl,
     });
+  }
+
+  /** Plain JSON-safe fields for the neural signal payload. */
+  toFields() {
+    return { ...this };
   }
 
   nextHop(sender, senderInstanceId = undefined) {
