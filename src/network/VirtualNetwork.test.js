@@ -37,7 +37,6 @@ test('remote subscriptions created from incoming signals are registered with the
   const runtime = {
     BroadcastChannel: null,
     RTCPeerConnection: null,
-    SharedWorker: null,
     clearTimer: clearTimeout,
     crypto: globalThis.crypto,
     setTimer: setTimeout,
@@ -89,7 +88,6 @@ function makeHost(fields = {}) {
   const runtime = {
     BroadcastChannel: null,
     RTCPeerConnection: null,
-    SharedWorker: null,
     clearTimer: clearTimeout,
     crypto: globalThis.crypto,
     setTimer: setTimeout,
@@ -315,7 +313,7 @@ test('a known app route defers the mesh fallback', () => {
 });
 
 test('a p2p offer replaces an in-progress mesh negotiation', async () => {
-  const host = makeHost({ role: 'table', routeOracle: () => false });
+  const host = makeHost({ role: 'peer', routeOracle: () => false });
   host.subscribe(
     'inbound',
     'outbound',

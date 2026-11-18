@@ -159,6 +159,44 @@ test('missing p2p route starts through mesh on the first attempt', () => {
   assert.equal(subscription.shouldTryMeshNodeFirst(), true);
 });
 
+test('a table role never starts through the mesh on its own', () => {
+  const network = new TestNetwork({
+    connectedPeers: false,
+    meshFirst: true,
+  });
+  network.config.role = 'table';
+  const subscription = new VirtualSubscription({
+    network,
+    subscriptionLabel: 'inbound',
+    channelLabel: 'outbound',
+    peerAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    timeout: 10_000,
+    lobbyId: '1',
+    tableId: '7',
+  });
+
+  assert.equal(subscription.shouldTryMeshNodeFirst(), false);
+});
+
+test('a lobby role talks gossip first and only falls back to mesh', () => {
+  const network = new TestNetwork({
+    connectedPeers: false,
+    meshFirst: true,
+  });
+  network.config.role = 'lobby';
+  const subscription = new VirtualSubscription({
+    network,
+    subscriptionLabel: 'inbound',
+    channelLabel: 'outbound',
+    peerAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    timeout: 10_000,
+    lobbyId: '1',
+    tableId: '0',
+  });
+
+  assert.equal(subscription.shouldTryMeshNodeFirst(), false);
+});
+
 test('same active subscription cannot be restarted by subscribe or poke', () => {
   const network = new TestNetwork();
   const subscription = new VirtualSubscription({

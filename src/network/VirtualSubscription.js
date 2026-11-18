@@ -56,6 +56,7 @@ export class VirtualSubscription {
   }
 
   shouldTryMeshNodeFirst() {
+    if (this.network.config.role === 'table' || this.network.config.role === 'lobby') return false;
     if (this.hasP2PRoute()) return false;
     return true;
   }

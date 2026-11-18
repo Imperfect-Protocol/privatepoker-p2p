@@ -13,7 +13,10 @@ import { ControlMessage } from './ControlMessage.js';
 import { ConnectionMemory } from './ConnectionMemory.js';
 import { ConnectionStep } from '../events/ConnectionStep.js';
 import { ConnectionState } from '../state/ConnectionState.js';
-import { VirtualControlBus } from './VirtualControlBus.js';
+import { BrowserTabBus } from '../tabs/BrowserTabBus.js';
+import { TabMessageType } from '../tabs/TabMessage.js';
+import { BackgroundConnectionKeeper } from './BackgroundConnectionKeeper.js';
+import { LobbyRouteClient } from './LobbyRouteClient.js';
 import { SubscriptionScope } from './SubscriptionScope.js';
 import { VirtualNetworkConsoleLogger } from '../logging/VirtualNetworkConsoleLogger.js';
 
@@ -30,10 +33,13 @@ export class VirtualNetworkHost {
     this.connectedSubscriptions = new Map();
     this.seenControlMessages = new Set();
     this.connectionMemory = new ConnectionMemory();
-    this.p2pNetwork = new NeuralRoutingNetwork(this);
+    this.p2pNetwork = this.config.role === 'table'
+      ? new LobbyRouteClient(this)
+      : new NeuralRoutingNetwork(this);
     this.p2pNetwork.start();
     this.meshNetwork = new MeshNetwork(this);
-    this.controlBus = new VirtualControlBus(this);
+    this.controlBus = new BrowserTabBus(this);
+    this.backgroundKeeper = new BackgroundConnectionKeeper(this);
     this.localStream = null;
     this.closed = false;
   }
@@ -104,17 +110,23 @@ export class VirtualNetworkHost {
   }
 
   registerConnectedSubscription(subscription) {
-    this.connectionMemory.rememberConnected(subscription.peerAddress.toString());
-    this.connectedSubscriptions.set(subscription.peerAddress.toString(), subscription);
-    this.p2pNetwork.neighbourAdded(subscription.peerAddress.toString());
+    const peerAddress = subscription.peerAddress.toString();
+    this.connectionMemory.rememberConnected(peerAddress);
+    this.connectedSubscriptions.set(peerAddress, subscription);
+    this.p2pNetwork.neighbourAdded(peerAddress);
     this.meshNetwork.reportConnected(subscription);
+    if (this.config.role === 'lobby' && subscription.tableId === '0') {
+      this.backgroundKeeper.answerConnected(peerAddress);
+    }
   }
 
   unregisterConnectedSubscription(subscription) {
     const peerAddress = subscription.peerAddress.toString();
-    if (this.connectedSubscriptions.get(peerAddress) === subscription) {
-      this.connectedSubscriptions.delete(peerAddress);
-      this.p2pNetwork.neighbourRemoved(peerAddress);
+    if (this.connectedSubscriptions.get(peerAddress) !== subscription) return;
+    this.connectedSubscriptions.delete(peerAddress);
+    this.p2pNetwork.neighbourRemoved(peerAddress);
+    if (this.config.role === 'lobby' && subscription.tableId === '0' && subscription.canRestart()) {
+      void subscription.start();
     }
   }
 
@@ -142,6 +154,8 @@ export class VirtualNetworkHost {
     );
     this.seenControlMessages.add(message.id);
     this.sendControlLocally(message);
+    if (this.config.role === 'table') return;
+    if (message.type === TabMessageType.FIND_PEER_RESPONSE) return;
     if (message.to && message.to !== this.address.toString()) {
       this.p2pNetwork.sendTo(message.to, message.toFields());
       return;
@@ -240,6 +254,13 @@ export class VirtualNetworkHost {
       });
       return;
     }
+    VirtualNetworkConsoleLogger.log('lobby.find.mesh-fallback', {
+      address: this.address.toString(),
+      peerAddress,
+      lobbyId: subscription.lobbyId,
+      tableId: subscription.tableId,
+      reason: 'neural-retries-exhausted',
+    });
     VirtualNetworkConsoleLogger.log('neural.fallback.request', {
       address: this.address.toString(),
       peerAddress,
@@ -272,11 +293,33 @@ export class VirtualNetworkHost {
       return;
     }
 
+    if (source === 'local' && this.config.role === 'lobby') {
+      if (message.type === TabMessageType.FIND_PEER_REQUEST) {
+        this.backgroundKeeper.rememberRequest(message);
+        return;
+      }
+      if (message.type === TabMessageType.FIND_PEER_RESPONSE) return;
+      if (message.senderRole === 'table' && message.to && message.to !== this.address.toString()) {
+        this.tunnelToPeer(message);
+        return;
+      }
+    }
+
+    if (source === 'local' && this.config.role === 'table') {
+      if (!this.acceptsLocalTableMessage(message)) return;
+      if (message.type === TabMessageType.FIND_PEER_RESPONSE) {
+        this.p2pNetwork.handleFindPeerResponse(message);
+        return;
+      }
+      if (message.type === TabMessageType.FIND_PEER_REQUEST) return;
+    }
+
     if (source === 'local') this.relayLocalControl(message);
 
     if (source === 'peer') {
       this.emitReceivedSignal(message);
       this.sendControlLocally(message);
+      if (this.config.role === 'lobby' && this.isTableTargeted(message)) return;
     }
 
     if (message.type === 'mesh-announce') this.handleMeshAnnounce(message);
@@ -287,6 +330,40 @@ export class VirtualNetworkHost {
     if (message.type === 'sdp-offer') void this.handleSdpOffer(message);
     if (message.type === 'sdp-answer') void this.handleSdpAnswer(message);
     this.respondPeerWaitingWhenLobbyRouteFound(message);
+  }
+
+  acceptsLocalTableMessage(message) {
+    if (message.to && message.to !== this.address.toString()) return false;
+    if (message.targetRole && message.targetRole !== this.config.role) return false;
+    if (message.targetInstanceId && message.targetInstanceId !== this.instanceId) return false;
+    return true;
+  }
+
+  isTableTargeted(message) {
+    if (message.targetRole === 'table') return true;
+    return message.senderRole === 'table' && [
+      'p2p-mst-announce',
+      'sdp-offer',
+      'sdp-answer',
+      'p2p-peer-waiting-accepted',
+      'p2p-peer-waiting-rejected',
+    ].includes(message.type);
+  }
+
+  tunnelToPeer(message) {
+    VirtualNetworkConsoleLogger.log('lobby.tunnel.forward', {
+      address: this.address.toString(),
+      peerAddress: message.to,
+      messageType: message.type,
+      senderRole: message.senderRole,
+    });
+    this.p2pNetwork.sendTo(message.to, {
+      ...message,
+      sender: this.address.toString(),
+      senderInstanceId: this.instanceId,
+      senderRole: this.config.role,
+      ttl: this.config.controlTtl,
+    });
   }
 
   handleMeshAnnounce(message) {
@@ -509,6 +586,7 @@ export class VirtualNetworkHost {
       from: this.address.toString(),
       to: message.from,
       senderRole: this.config.role,
+      targetRole: message.senderRole,
       targetInstanceId: message.responderInstanceId,
       subscriptionLabel: subscription.subscriptionLabel,
       channelLabel: subscription.channelLabel,
@@ -742,6 +820,7 @@ export class VirtualNetworkHost {
     Array.from(this.subscriptions.values()).forEach((subscription) => this.stopSubscription(subscription));
     this.p2pNetwork?.stop?.();
     this.meshNetwork.close();
+    this.backgroundKeeper.close();
     this.controlBus.close();
     this.localStream = null;
   }

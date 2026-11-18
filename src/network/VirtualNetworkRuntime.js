@@ -5,6 +5,5 @@ export class VirtualNetworkRuntime {
     this.crypto = globalThis.crypto;
     this.RTCPeerConnection = globalThis.RTCPeerConnection;
     this.BroadcastChannel = globalThis.BroadcastChannel;
-    this.SharedWorker = globalThis.SharedWorker;
   }
 }
