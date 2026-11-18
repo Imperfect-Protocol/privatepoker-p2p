@@ -773,7 +773,19 @@ export class VirtualNetworkHost {
 
   prepareOutgoingOffer(subscription, message) {
     if (subscription.canBeginNegotiation()) return true;
-    return false;
+    if (message.via !== 'p2p' || subscription.state !== ConnectionState.TRY_MESH_NODE) return false;
+    this.emitConnectionStep({
+      step: ConnectionStep.REPLACING_CONNECTION,
+      via: message.via,
+      flowId: message.flowId,
+      subscriptionLabel: subscription.subscriptionLabel,
+      channelLabel: subscription.channelLabel,
+      lobbyId: subscription.lobbyId,
+      tableId: subscription.tableId,
+      peerAddress: subscription.peerAddress.toString(),
+    });
+    subscription.replaceForOffer(message.via);
+    return true;
   }
 
   createPeerSession(peerAddress) {

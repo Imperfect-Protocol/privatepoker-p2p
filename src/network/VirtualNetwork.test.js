@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { VirtualNetwork } from './VirtualNetwork.js';
 import { VirtualNetworkHost } from './VirtualNetworkHost.js';
 import { ControlMessage } from './ControlMessage.js';
+import { ConnectionState } from '../state/ConnectionState.js';
 
 test('control messages keep a neural bundle payload', () => {
   const message = ControlMessage.create(
@@ -307,6 +308,43 @@ test('a known app route defers the mesh fallback', () => {
   host.requestMeshFallback(subscription.peerAddress.toString());
 
   assert.equal(meshLookups, 0);
+  host.close();
+});
+
+test('a p2p offer replaces an in-progress mesh negotiation', async () => {
+  const host = makeHost({ role: 'table', routeOracle: () => false });
+  host.subscribe(
+    'inbound',
+    'outbound',
+    '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    10_000,
+    '1',
+    '7',
+  );
+  const subscription = Array.from(host.subscriptions.values()).at(-1);
+  assert.equal(subscription.state, ConnectionState.TRY_MESH_NODE);
+  subscription.attachPeerSession(new TestPeerSession());
+
+  const sent = [];
+  host.createPeerSession = () => {
+    const peerSession = new TestPeerSession();
+    peerSession.createOffer = async () => ({ sdp: 'offer' });
+    return peerSession;
+  };
+  host.broadcastControl = (message) => sent.push(message);
+
+  await host.handleP2PAnnounce({
+    to: host.address.toString(),
+    from: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    subscriptionLabel: 'inbound',
+    channelLabel: 'outbound',
+    lobbyId: '1',
+    tableId: '7',
+  });
+
+  assert.equal(sent[0].type, 'sdp-offer');
+  assert.equal(sent[0].via, 'p2p');
+  assert.equal(subscription.state, ConnectionState.TRY_P2P_NETWORK);
   host.close();
 });
 
