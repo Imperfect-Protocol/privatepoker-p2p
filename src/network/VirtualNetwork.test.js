@@ -5,6 +5,7 @@ import { VirtualNetwork } from './VirtualNetwork.js';
 import { VirtualNetworkHost } from './VirtualNetworkHost.js';
 import { ControlMessage } from './ControlMessage.js';
 import { ConnectionState } from '../state/ConnectionState.js';
+import { ConnectionStep } from '../events/ConnectionStep.js';
 
 test('control messages keep a neural bundle payload', () => {
   const message = ControlMessage.create(
@@ -75,6 +76,8 @@ class TestPeerSession {
   }
 
   sendControl() {}
+
+  applyAnswer() {}
 
   close() {
     this.closed = true;
@@ -345,6 +348,59 @@ test('a p2p offer replaces an in-progress mesh negotiation', async () => {
   assert.equal(sent[0].type, 'sdp-offer');
   assert.equal(sent[0].via, 'p2p');
   assert.equal(subscription.state, ConnectionState.TRY_P2P_NETWORK);
+  host.close();
+});
+
+test('a live p2p connection ignores a stale mesh offer', async () => {
+  const events = [];
+  const host = makeHost({ handler: (event) => events.push(event) });
+  const subscription = connectPeer(host);
+  const liveSession = subscription.peerSession;
+  let createdSessions = 0;
+  host.createPeerSession = () => {
+    createdSessions += 1;
+    return new TestPeerSession();
+  };
+
+  await host.handleMeshOffer({
+    from: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    to: host.address.toString(),
+    subscriptionLabel: 'inbound',
+    channelLabel: 'outbound',
+    lobbyId: '1',
+    tableId: '7',
+    flowId: 'stale-mesh-flow',
+    sdp: 'stale offer',
+  }, () => {});
+
+  assert.equal(createdSessions, 0);
+  assert.equal(subscription.peerSession, liveSession);
+  assert.equal(subscription.state, ConnectionState.PEER_CONNECTED);
+  assert.equal(events.some((event) => event.step === ConnectionStep.REPLACING_CONNECTION), false);
+  host.close();
+});
+
+test('a stale mesh answer leaves a live peer session untouched', async () => {
+  const host = makeHost();
+  const subscription = connectPeer(host);
+  const liveSession = subscription.peerSession;
+  let appliedAnswers = 0;
+  liveSession.applyAnswer = () => {
+    appliedAnswers += 1;
+  };
+
+  await host.handleMeshAnswer({
+    from: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    to: host.address.toString(),
+    lobbyId: '1',
+    tableId: '7',
+    flowId: 'stale-mesh-flow',
+    sdp: 'stale answer',
+  });
+
+  assert.equal(appliedAnswers, 0);
+  assert.equal(subscription.peerSession, liveSession);
+  assert.equal(subscription.state, ConnectionState.PEER_CONNECTED);
   host.close();
 });
 

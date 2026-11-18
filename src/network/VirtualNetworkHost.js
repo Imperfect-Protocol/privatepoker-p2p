@@ -639,6 +639,7 @@ export class VirtualNetworkHost {
   async handleMeshAnswer(message) {
     const subscription = this.findSubscriptionByPeer(message.from, message.lobbyId, message.tableId);
     if (!subscription) return;
+    if (subscription.state === ConnectionState.PEER_CONNECTED) return;
     this.emitConnectionStep({
       step: ConnectionStep.ANSWER_RECEIVED,
       via: 'mesh',
@@ -755,7 +756,9 @@ export class VirtualNetworkHost {
 
   prepareIncomingOffer(subscription, message) {
     if (subscription.canBeginNegotiation()) return true;
-    if (subscription.state === ConnectionState.PEER_CONNECTED && subscription.tableId === '0') return false;
+    if (subscription.state === ConnectionState.PEER_CONNECTED) {
+      if (subscription.tableId === '0' || message.via === 'mesh') return false;
+    }
     if (subscription.state !== ConnectionState.PEER_CONNECTED && subscription.peerSession?.isConnected()) return false;
     this.emitConnectionStep({
       step: ConnectionStep.REPLACING_CONNECTION,
