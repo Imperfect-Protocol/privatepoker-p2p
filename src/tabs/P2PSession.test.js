@@ -16,7 +16,7 @@ test('LobbyP2PSession owns the neural routing node, not the table', () => {
 });
 
 test('TableP2PSession owns no neural node', () => {
-  const session = new TableP2PSession({ address: ADDRESS, privateKey: {}, lobbyId: '1', tableId: '7' });
+  const session = new TableP2PSession({ address: ADDRESS, privateKey: {}, peerId: 'parent-1', lobbyId: '1', tableId: '7' });
   assert.equal(session.host.config.role, 'table');
   assert.equal(session.host.p2pNetwork.constructor.name, 'LobbyRouteClient');
   assert.equal(session.host.meshNetwork.sessions.size, 0);
@@ -24,7 +24,7 @@ test('TableP2PSession owns no neural node', () => {
 });
 
 test('TableP2PSession subscription targets the requested peer and scope', () => {
-  const session = new TableP2PSession({ address: ADDRESS, privateKey: {}, lobbyId: '1', tableId: '7' });
+  const session = new TableP2PSession({ address: ADDRESS, privateKey: {}, peerId: 'parent-1', lobbyId: '1', tableId: '7' });
   session.subscribe(PEER);
   const subscription = session.host.findSubscriptionByPeer(PEER, '1', '7');
   assert.ok(subscription);

@@ -2,6 +2,7 @@ import { VirtualNetworkConfig } from '../config/VirtualNetworkConfig.js';
 import { VirtualNetworkEventType } from '../events/VirtualNetworkEventType.js';
 import { VirtualNetworkHost } from '../network/VirtualNetworkHost.js';
 import { VirtualNetworkRuntime } from '../network/VirtualNetworkRuntime.js';
+import { PeerSessionId } from './PeerSessionId.js';
 
 /**
  * Lobby-tab facade.
@@ -14,6 +15,10 @@ export class LobbyP2PSession {
     this.handler = fields.handler ?? (() => {});
     this.address = fields.address;
     this.privateKey = fields.privateKey;
+    this.runtime = fields.runtime ?? new VirtualNetworkRuntime();
+    this.peerId = fields.peerId
+      ? PeerSessionId.from(fields.peerId)
+      : PeerSessionId.random(this.runtime);
     this.host = new VirtualNetworkHost(
       (event) => this.handleEvent(event),
       this.address,
@@ -25,9 +30,10 @@ export class LobbyP2PSession {
         meshUrls: fields.meshUrls ?? [],
         iceServers: fields.iceServers,
         broadcastPrefix: fields.broadcastPrefix,
+        peerId: this.peerId,
         neural: fields.neural ?? {},
       }),
-      fields.runtime ?? new VirtualNetworkRuntime(),
+      this.runtime,
     );
   }
 
@@ -35,6 +41,10 @@ export class LobbyP2PSession {
 
   handleEvent(event) {
     if (event.type === VirtualNetworkEventType.PEER_WAIT_REQUEST) this.waitingRequest = event;
+    if (
+      event.type === VirtualNetworkEventType.PEER_WAIT_ACCEPTED
+      && this.waitingRequest?.requestId === event.requestId
+    ) this.waitingRequest = null;
     if (
       event.type === VirtualNetworkEventType.CONNECTION_TIMEOUT
       || event.type === VirtualNetworkEventType.CONNECTION_FAILED

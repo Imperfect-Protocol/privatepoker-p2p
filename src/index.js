@@ -11,5 +11,6 @@ export { TableP2PSession } from './tabs/TableP2PSession.js';
 export { BrowserTabBus } from './tabs/BrowserTabBus.js';
 export { TabMessage, TabMessageType } from './tabs/TabMessage.js';
 export { ConnectionDirection } from './tabs/ConnectionDirection.js';
+export { PeerSessionId } from './tabs/PeerSessionId.js';
 export { NeuralRoutingConfig } from './neural/NeuralRoutingConfig.js';
 export { NeuralTrace } from './neural/NeuralTrace.js';

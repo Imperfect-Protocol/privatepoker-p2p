@@ -1,7 +1,9 @@
 import { VirtualNetworkConfig } from '../config/VirtualNetworkConfig.js';
+import { VirtualNetworkEventType } from '../events/VirtualNetworkEventType.js';
 import { VirtualNetworkHost } from '../network/VirtualNetworkHost.js';
 import { VirtualNetworkRuntime } from '../network/VirtualNetworkRuntime.js';
 import { ConnectionDirection } from './ConnectionDirection.js';
+import { PeerSessionId } from './PeerSessionId.js';
 
 /**
  * Table-tab facade.
@@ -15,11 +17,12 @@ export class TableP2PSession {
     this.handler = fields.handler ?? (() => {});
     this.address = fields.address;
     this.privateKey = fields.privateKey;
+    this.peerId = PeerSessionId.from(fields.peerId);
     this.inboundLabel = fields.inboundLabel ?? 'inbound';
     this.outboundLabel = fields.outboundLabel ?? 'outbound';
     this.direction = fields.direction ?? ConnectionDirection.ANNOUNCING;
     this.host = new VirtualNetworkHost(
-      (event) => this.handler(event),
+      (event) => this.handleEvent(event),
       this.address,
       this.privateKey,
       new VirtualNetworkConfig({
@@ -29,9 +32,26 @@ export class TableP2PSession {
         meshUrls: [],
         iceServers: fields.iceServers,
         broadcastPrefix: fields.broadcastPrefix,
+        peerId: this.peerId,
       }),
       fields.runtime ?? new VirtualNetworkRuntime(),
     );
+  }
+
+  handleEvent(event) {
+    if (event.type === VirtualNetworkEventType.PEER_CONNECTED) {
+      this.host.broadcastControl({
+        type: 'table-connection-ready',
+        from: this.host.address.toString(),
+        to: this.host.address.toString(),
+        senderRole: this.host.config.role,
+        targetRole: 'lobby',
+        peerAddress: event.peerAddress,
+        lobbyId: event.lobbyId,
+        tableId: event.tableId,
+      });
+    }
+    this.handler(event);
   }
 
   subscribe(peerAddress, lobbyId = undefined, tableId = undefined) {

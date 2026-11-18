@@ -40,12 +40,12 @@ test('control bus exchanges messages only through BroadcastChannel', () => {
     runtime: { BroadcastChannel: TestBroadcastChannel },
     address: { toString: () => '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
     instanceId: 'test-instance',
-    config: { broadcastPrefix: 'privatepoker-p2p', role: 'table' },
+    config: { broadcastPrefix: 'privatepoker-p2p', peerId: 'parent-1', role: 'table' },
     handleControlMessage: (message, source) => received.push({ message, source }),
   };
 
   const bus = new VirtualControlBus(host);
-  assert.equal(channel.channelName, 'privatepoker-p2p:control');
+  assert.equal(channel.channelName, 'privatepoker-p2p:parent-1:control');
 
   bus.post({ type: 'route-probe' });
   assert.deepEqual(channel.messages, [{ type: 'route-probe' }]);
@@ -55,4 +55,48 @@ test('control bus exchanges messages only through BroadcastChannel', () => {
 
   bus.close();
   assert.equal(channel.closed, true);
+});
+
+test('separate Lobby parent channels cannot read each other', () => {
+  const channels = new Map();
+  class TestBroadcastChannel {
+    constructor(name) {
+      this.name = name;
+      this.listeners = channels.get(name) ?? new Set();
+      this.listeners.add(this);
+      channels.set(name, this.listeners);
+    }
+
+    postMessage(message) {
+      this.listeners.forEach((listener) => {
+        if (listener !== this) listener.onmessage?.({ data: message });
+      });
+    }
+
+    close() {
+      this.listeners.delete(this);
+    }
+  }
+  const received = [];
+  const session = (peerId) => {
+    const host = {
+      runtime: { BroadcastChannel: TestBroadcastChannel },
+      address: { toString: () => '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+      instanceId: peerId,
+      config: { broadcastPrefix: 'privatepoker-p2p', peerId, role: 'table' },
+      handleControlMessage: (message) => received.push({ peerId, message }),
+    };
+    return new VirtualControlBus(host);
+  };
+  const first = session('parent-1');
+  const second = session('parent-2');
+
+  first.post({ type: 'first-only' });
+  assert.deepEqual(received, []);
+
+  second.post({ type: 'second-only' });
+  assert.deepEqual(received, []);
+
+  first.close();
+  second.close();
 });

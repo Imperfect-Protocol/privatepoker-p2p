@@ -59,13 +59,14 @@ export class NeuralRoutingNetwork {
    */
   async findPeer(subscription) {
     const peerAddress = subscription.peerAddress.toString();
+    const scope = this.network.backgroundKeeper.discoveryScope(subscription);
     this.network.emitConnectionStep({
       step: ConnectionStep.ANNOUNCE_SENT,
       via: 'neural',
-      subscriptionLabel: subscription.subscriptionLabel,
-      channelLabel: subscription.channelLabel,
-      lobbyId: subscription.lobbyId,
-      tableId: subscription.tableId,
+      subscriptionLabel: scope.subscriptionLabel,
+      channelLabel: scope.channelLabel,
+      lobbyId: scope.lobbyId,
+      tableId: scope.tableId,
       peerAddress,
     });
     const payload = this.network.publishDiscovery({
@@ -75,10 +76,10 @@ export class NeuralRoutingNetwork {
       senderRole: this.network.config.role,
       targetRole: this.network.config.role,
       initiatorInstanceId: this.network.instanceId,
-      subscriptionLabel: subscription.subscriptionLabel,
-      channelLabel: subscription.channelLabel,
-      lobbyId: subscription.lobbyId,
-      tableId: subscription.tableId,
+      subscriptionLabel: scope.subscriptionLabel,
+      channelLabel: scope.channelLabel,
+      lobbyId: scope.lobbyId,
+      tableId: scope.tableId,
     });
     this.node.requestAnnounce(peerAddress, payload);
   }

@@ -44,6 +44,16 @@ export class BackgroundConnectionKeeper {
     if (subscription?.peerSession?.isConnected()) this.answerConnected(peerAddress);
   }
 
+  discoveryScope(subscription) {
+    const request = this.requests.get(subscription.peerAddress.toString())?.[0];
+    if (!request) return subscription;
+    return {
+      ...subscription,
+      lobbyId: request.lobbyId,
+      tableId: request.tableId,
+    };
+  }
+
   ensureSubscription(peerAddress) {
     const existing = this.network.findSubscriptionByPeer(peerAddress, undefined, '0');
     if (existing) return existing;

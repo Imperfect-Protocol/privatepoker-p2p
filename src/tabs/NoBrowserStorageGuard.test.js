@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { join, extname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
+const SOURCE_ROOT = fileURLToPath(new URL('../', import.meta.url));
 const ROOTS = [
-  '/Users/sadhbh/src/ImperfectProtocol/privatepoker-p2p/src',
-  '/Users/sadhbh/src/ImperfectProtocol/privatepoker-p2p-testapp/src',
+  SOURCE_ROOT,
+  resolve(SOURCE_ROOT, '../../privatepoker-p2p-testapp/src'),
 ];
 const FORBIDDEN = [
   /\blocalStorage\b/i,
@@ -14,6 +16,7 @@ const FORBIDDEN = [
   /document\.cookie/i,
   /\bserviceWorker\b/i,
   /\bSharedWorker\b/,
+  /\bcaches\b/i,
 ];
 
 function collectSources(root, matches) {

@@ -10,6 +10,9 @@ function makeNetwork() {
   const created = [];
   const subscription = {
     peerSession: { isConnected: () => false },
+    peerAddress: { toString: () => '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+    lobbyId: '1',
+    tableId: '0',
   };
   return {
     address: { toString: () => '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
@@ -71,6 +74,22 @@ test('one background edge is shared across different lobby ids for the same peer
 
   assert.equal(network.subscriptions.length, 1);
   assert.equal(keeper.requests.get('0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb').length, 2);
+});
+
+test('discovery preserves the table pair, then the live connection forgets it', () => {
+  const network = makeNetwork();
+  const keeper = new BackgroundConnectionKeeper(network);
+  keeper.rememberRequest(request({ tableId: '16', lobbyId: '42' }));
+  const backgroundSubscription = network.findSubscriptionByPeer();
+
+  assert.equal(keeper.discoveryScope(backgroundSubscription).lobbyId, '42');
+  assert.equal(keeper.discoveryScope(backgroundSubscription).tableId, '16');
+  assert.equal(backgroundSubscription.tableId, '0');
+
+  keeper.answerConnected('0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+
+  assert.equal(keeper.discoveryScope(backgroundSubscription).tableId, '0');
+  assert.equal(keeper.discoveryScope(backgroundSubscription).lobbyId, '1');
 });
 
 test('a connected background edge answers pending table requests', () => {

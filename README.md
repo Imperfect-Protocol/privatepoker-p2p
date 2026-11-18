@@ -1,8 +1,51 @@
 # privatepoker-p2p
 
-`privatepoker-p2p` is the standalone Private Poker virtual network library.
+Standalone, browser-only Peer-to-Peer networking for Private Poker. State belongs to the tab that creates it. Nothing is persisted in browser storage, and tabs exchange control messages only through `BroadcastChannel`.
 
-The public surface is intentionally small:
+## Lobby and table sessions
+
+A Lobby tab creates a `LobbyP2PSession`. It generates a unique, in-memory `peerId` and owns its background P2P connections and neural routing. Its Table tabs must receive that ID when they are opened.
+
+```js
+const lobby = new LobbyP2PSession({
+  handler,
+  address,
+  privateKey,
+  lobbyId,
+  meshUrls,
+});
+
+// The Lobby parent ID belongs in the Table tab's URL or launch options.
+window.open(`/table?peerId=${encodeURIComponent(lobby.peerId)}`);
+
+const table = new TableP2PSession({
+  handler,
+  address,
+  privateKey,
+  peerId: new URL(location.href).searchParams.get('peerId'),
+  lobbyId,
+  tableId,
+});
+```
+
+The Application decides which tab belongs to which Lobby. `TableP2PSession` does not guess among available Lobbies and requires a valid parent `peerId`. Each peer's tabs use the channel `${broadcastPrefix}:${peerId}:control`, so several peers can coexist in one browser without reading each other's messages.
+
+### Connection flow
+
+1. `table.subscribe(peerAddress, lobbyId, tableId)` sends a find-peer request to that Table's Lobby over `BroadcastChannel`.
+2. The Lobby attempts discovery over its connected P2P neighbours.
+3. If discovery exhausts its retries, the **Lobby** performs mesh fallback; the Table does not create a mesh session.
+4. When the background P2P connection is live, the Lobby answers with a route and keeps that connection alive. The Table signals through this route and establishes its direct Table-to-Table WebRTC connection.
+5. Closing the Table tab releases only that Table's connection and state. The Lobby's background edge and independently connected tables stay alive.
+6. Closing the Lobby tab releases its channels, pending work, background edges, and routing state. Existing direct table edges are not owned by it.
+
+During discovery, the Table tab's original `(lobbyId, tableId)` is forwarded unchanged. Live Lobby-to-Lobby neighbour records are keyed only by peer address; they retain no table identity.
+
+The application does not implement route discovery, liveness, mesh fallback, tab tunnelling, or neural routing. It constructs sessions, inherits the parent ID for Table tabs, and reacts to events. `close()` releases the session's local resources.
+
+## Low-level API
+
+`VirtualNetwork` remains available as the generic network API:
 
 ```js
 const virtualNet = new VirtualNetwork(handlerFunction, address, privateKey);
@@ -10,82 +53,45 @@ const virtualNet = new VirtualNetwork(handlerFunction, address, privateKey);
 virtualNet.subscribe('inbound', 'outbound', peerAddress, 10_000, lobbyId, tableId);
 virtualNet.unsubscribe('inbound');
 virtualNet.send('outbound', message);
-virtualNet.setLocalStream(mediaStream); // optional audio/video, null to stop
-virtualNet.close(); // releases peer connections, polling, worker and local bus
+virtualNet.setLocalStream(mediaStream); // Optional audio/video; null stops it.
+virtualNet.close();
 ```
 
-Media tracks ride on the same `RTCPeerConnection` as the data channel. Renegotiation offers and answers are sent over the open data channel (perfect negotiation, higher address is polite), so no extra signalling is needed. Remote media arrives as a `MediaStream` event carrying `{ peerAddress, stream }`; it is re-emitted whenever tracks are added, removed, muted or ended.
-
-The caller does not know whether signalling used an existing P2P route, collaborative route discovery, or mesh fallback. The caller receives every state change and message through the single handler function.
+Media tracks ride on the data channel's `RTCPeerConnection`. Renegotiation offers and answers use perfect negotiation over the open connection. Remote media arrives as a `MediaStream` event containing `{ peerAddress, stream }`.
 
 ## Events
 
-The handler receives these event types:
+The handler receives:
 
 - `PeerConnected`
+- `PeerWaiting` / `PeerWaitRequest` / `PeerWaitAccepted` / `PeerWaitRejected`
 - `ConnectionTimeout`
-- `PeerDisconnected`
-- `MessageDelivered`
-- `MessageReceived`
 - `ConnectionFailed`
 - `ConnectionStep`
+- `PeerDisconnected`
+- `MessageDelivered` / `MessageReceived`
 - `MeshPollError`
 - `MediaStream`
 
-Connection protocol notifications are emitted as `ConnectionStep` events. The important step names are:
+`ConnectionAttemptStateMachine` uses named states `Initial`, `TryP2PNetwork`, `TryMeshNode`, `PeerWaiting`, `PeerRejected`, `ConnectionTimeout`, `PeerConnected`, `Failed`, and `Disconnected`.
 
-- `AnnounceSent`
-- `AnnounceReceived`
-- `OfferRequested`
-- `OfferSent`
-- `OfferReceived`
-- `AnswerSent`
-- `AnswerReceived`
+Signalling steps include `AnnounceSent`, `AnnounceReceived`, `OfferRequested`, `OfferSent`, `OfferReceived`, `AnswerSent`, `AnswerReceived`, and `RouteAvailable`.
 
-## Connection Model
+## Mesh fallback
 
-`subscribe(subscriptionLabel, channelLabel, peerAddress, timeout, lobbyId, tableId)` creates one labelled receiving subscription and one labelled sending channel for a poker table context.
-
-The connection attempt is driven by `ConnectionAttemptStateMachine`:
-
-- `Initial`
-- `TryP2PNetwork`
-- `TryMeshNode`
-- `ConnectionTimeout`
-- `PeerConnected`
-- `Failed`
-- `Disconnected`
-
-When the local peer already has connected peers, the first attempt uses P2P scatter discovery. When no peers are connected, or when the previous P2P attempt timed out, the next attempt uses mesh fallback.
-
-## Mesh Fallback
-
-Pass mesh endpoints in `VirtualNetworkConfig` when the network should use deployed private-mesh nodes:
+`meshUrls` is a Lobby configuration option:
 
 ```js
-const virtualNet = new VirtualNetwork(handlerFunction, address, privateKey, {
-  meshUrls: [
-    'http://127.0.0.1:3001/mesh',
-    'http://127.0.0.1:3002/mesh',
-  ],
+const lobby = new LobbyP2PSession({
+  handler,
+  address,
+  privateKey,
+  meshUrls: ['http://127.0.0.1:3001/mesh', 'http://127.0.0.1:3002/mesh'],
 });
 ```
 
-The mesh adapter speaks the Postgres-backed private-mesh protocol:
-
-- `bootstrap-announce`
-- `trigger-offer`
-- `bootstrap-interest`
-- `bootstrap-offer`
-- `bootstrap-answer`
-- `p2p-route-available`
-- `link-connected`
-- `link-failed`
-
-SDP payloads are carried as hex-encoded JSON under `signal.encryptedData`, which matches private-mesh validation while keeping the caller-facing `P2PMessage` unchanged.
+The mesh adapter uses `bootstrap-announce`, `trigger-offer`, `bootstrap-interest`, `bootstrap-offer`, `bootstrap-answer`, `p2p-route-available`, `link-connected`, and `link-failed`. SDP fields are carried as hex-encoded JSON in `signal.encryptedData`. The application's `P2PMessage` surface remains unchanged.
 
 ## Test App
 
-`../privatepoker-p2p-testapp` imports this package and creates two peers. Peer A uses `http://127.0.0.1:3001/mesh`; Peer B uses `http://127.0.0.1:3002/mesh`.
-
-The default context is `1/1`, so two separate browser windows opened at the test app can discover each other through private-mesh. The app also has a `Fresh context` link for isolated debugging runs.
+`privatepoker-p2p-testapp` demonstrates four independent mock peers, A/B and C/D. It can run multiple Lobby parents and their table tabs in one browser and routes table-tab launches through their owning Lobby.

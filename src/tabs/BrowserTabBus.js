@@ -20,12 +20,13 @@ export class BrowserTabBus {
       address: this.host.address.toString(),
       instanceId: this.host.instanceId,
       role: this.host.config.role,
+      peerId: this.host.config.peerId,
     });
   }
 
   open() {
     if (!this.host.runtime.BroadcastChannel) return;
-    this.channel = new this.host.runtime.BroadcastChannel(`${this.host.config.broadcastPrefix}:control`);
+    this.channel = new this.host.runtime.BroadcastChannel(`${this.host.config.broadcastPrefix}:${this.host.config.peerId}:control`);
     this.channel.onmessage = (event) => this.host.handleControlMessage(event.data, 'local');
     this.debug('broadcast.ready');
   }

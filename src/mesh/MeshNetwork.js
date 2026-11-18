@@ -15,20 +15,21 @@ export class MeshNetwork {
   }
 
   async findPeer(subscription) {
+    const discoveryScope = this.network.backgroundKeeper.discoveryScope(subscription);
     if (this.network.config.meshUrls.length > 0) {
       this.network.emitConnectionStep({
         step: ConnectionStep.ANNOUNCE_SENT,
         via: 'mesh',
-        subscriptionLabel: subscription.subscriptionLabel,
-        channelLabel: subscription.channelLabel,
-        lobbyId: subscription.lobbyId,
-        tableId: subscription.tableId,
-        peerAddress: subscription.peerAddress.toString(),
+        subscriptionLabel: discoveryScope.subscriptionLabel,
+        channelLabel: discoveryScope.channelLabel,
+        lobbyId: discoveryScope.lobbyId,
+        tableId: discoveryScope.tableId,
+        peerAddress: discoveryScope.peerAddress.toString(),
       });
-      this.pollSession(subscription).enqueue({
+      this.pollSession(discoveryScope).enqueue({
         type: 'bootstrap-announce',
         peer: this.network.address.toString(),
-        lookingFor: [subscription.peerAddress.toString()],
+        lookingFor: [discoveryScope.peerAddress.toString()],
       });
       return;
     }
@@ -36,20 +37,20 @@ export class MeshNetwork {
     this.network.emitConnectionStep({
       step: ConnectionStep.ANNOUNCE_SENT,
       via: 'mesh',
-      subscriptionLabel: subscription.subscriptionLabel,
-      channelLabel: subscription.channelLabel,
-      lobbyId: subscription.lobbyId,
-      tableId: subscription.tableId,
-      peerAddress: subscription.peerAddress.toString(),
+      subscriptionLabel: discoveryScope.subscriptionLabel,
+      channelLabel: discoveryScope.channelLabel,
+      lobbyId: discoveryScope.lobbyId,
+      tableId: discoveryScope.tableId,
+      peerAddress: discoveryScope.peerAddress.toString(),
     });
     this.network.broadcastControl({
       type: 'mesh-announce',
       from: this.network.address.toString(),
-      to: subscription.peerAddress.toString(),
-      subscriptionLabel: subscription.subscriptionLabel,
-      channelLabel: subscription.channelLabel,
-      lobbyId: subscription.lobbyId,
-      tableId: subscription.tableId,
+      to: discoveryScope.peerAddress.toString(),
+      subscriptionLabel: discoveryScope.subscriptionLabel,
+      channelLabel: discoveryScope.channelLabel,
+      lobbyId: discoveryScope.lobbyId,
+      tableId: discoveryScope.tableId,
     });
   }
 
@@ -71,34 +72,36 @@ export class MeshNetwork {
   }
 
   createInterestMessage(subscription, flowId, sdp) {
+    const scope = this.network.backgroundKeeper.discoveryScope(subscription);
     return {
       type: 'bootstrap-interest',
       signal: MeshSignal.fromSession({
         kind: 'offer',
         flowId,
         from: this.network.address.toString(),
-        to: subscription.peerAddress.toString(),
-        lobbyId: subscription.lobbyId,
-        tableId: subscription.tableId,
-        subscriptionLabel: subscription.subscriptionLabel,
-        channelLabel: subscription.channelLabel,
+        to: scope.peerAddress.toString(),
+        lobbyId: scope.lobbyId,
+        tableId: scope.tableId,
+        subscriptionLabel: scope.subscriptionLabel,
+        channelLabel: scope.channelLabel,
         sdp,
       }),
     };
   }
 
   createAnswerMessage(subscription, flowId, sdp) {
+    const scope = this.network.backgroundKeeper.discoveryScope(subscription);
     return {
       type: 'bootstrap-answer',
       signal: MeshSignal.fromSession({
         kind: 'answer',
         flowId,
         from: this.network.address.toString(),
-        to: subscription.peerAddress.toString(),
-        lobbyId: subscription.lobbyId,
-        tableId: subscription.tableId,
-        subscriptionLabel: subscription.subscriptionLabel,
-        channelLabel: subscription.channelLabel,
+        to: scope.peerAddress.toString(),
+        lobbyId: scope.lobbyId,
+        tableId: scope.tableId,
+        subscriptionLabel: scope.subscriptionLabel,
+        channelLabel: scope.channelLabel,
         sdp,
       }),
     };

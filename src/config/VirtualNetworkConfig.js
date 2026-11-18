@@ -5,11 +5,13 @@ export class VirtualNetworkConfig {
     this.tableId = fields.tableId ?? 'default-table';
     this.controlTtl = fields.controlTtl ?? 8;
     this.iceGatheringTimeoutMs = fields.iceGatheringTimeoutMs ?? 10_000;
+    this.tablePresenceTimeoutMs = fields.tablePresenceTimeoutMs ?? 250;
     this.iceServers = fields.iceServers ?? [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun.cloudflare.com:3478' },
     ];
     this.broadcastPrefix = fields.broadcastPrefix ?? 'privatepoker-p2p';
+    this.peerId = fields.peerId ?? 'default-peer';
     this.routeOracle = fields.routeOracle ?? null;
     this.role = fields.role ?? 'peer';
     this.neural = fields.neural ?? {};
