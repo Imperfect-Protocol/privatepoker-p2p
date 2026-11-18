@@ -24,10 +24,25 @@ export class SignalSignatures {
     return SignalSignatures.#profileWeights(profile).map(([angle, weight]) => [[angle, hop], weight]);
   }
 
+  /**
+   * Target is a single hash-derived direction hint with an unknown hop. A
+   * connection request is exactly that point, so no override is needed.
+   */
   targetWeights(signal) {
-    const targetAddress = signal.targetAddress ?? signal.originAddress;
-    return this.angleSpace.fuzzyWeights(this.#deltaTo(targetAddress))
+    return this.angleSpace.fuzzyWeights(this.#deltaTo(signal.targetAddress ?? signal.originAddress))
       .map((entry) => [[entry.bin, 0], entry.weight]);
+  }
+
+  /**
+   * A beacon is a whole row: every target position carries the same observation,
+   * so the row is scored as the uniform average over all target directions.
+   */
+  rowWeights() {
+    const weight = 1 / PathEmbedding.ANGLE_BINS;
+    return Array.from(
+      { length: PathEmbedding.ANGLE_BINS },
+      (_, bin) => [[bin, 0], weight],
+    );
   }
 
   neighbourWeights(neighbourAddress) {

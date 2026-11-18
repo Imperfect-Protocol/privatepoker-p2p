@@ -27,6 +27,9 @@ export class NeuralRoutingConfig {
     this.nodeThreshold = fields.nodeThreshold ?? 0.00005;
     this.nodePruneThreshold = fields.nodePruneThreshold ?? 0.00005;
     this.beaconIntervalMs = fields.beaconIntervalMs ?? 1_000;
+    this.routeReminderTtlMs = fields.routeReminderTtlMs
+      ?? Math.max(4_000, this.beaconIntervalMs * 4);
+    this.maxRouteReminders = fields.maxRouteReminders ?? 64;
     this.announceSpacingMs = fields.announceSpacingMs ?? 250;
     this.fallbackTimeoutMs = fields.fallbackTimeoutMs ?? 5_000;
     this.maxAnnounceAttempts = fields.maxAnnounceAttempts ?? 2;

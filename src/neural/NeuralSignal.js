@@ -1,15 +1,30 @@
+import { BeaconPath } from './BeaconPath.js';
 import { PathEmbedding } from './PathEmbedding.js';
 
-/** The three protocol signal kinds. Feedback is the reverse-route reward. */
+/**
+ * The four protocol signal kinds.
+ *
+ * - beacon: presence plus the origin's path reminders.
+ * - announce: discovery of a target, retried until answered.
+ * - relay: one addressed control message travelling over a route an announce
+ *   already found. Each relay has its own identity, so consecutive messages on
+ *   the same route are never mistaken for retries of one another.
+ * - feedback: the reverse-route reward for an announce.
+ */
 export class SignalKind {
   static beacon = 'beacon';
 
   static announce = 'announce';
 
+  static relay = 'relay';
+
   static feedback = 'feedback';
 
   static isKnown(kind) {
-    return kind === SignalKind.beacon || kind === SignalKind.announce || kind === SignalKind.feedback;
+    return kind === SignalKind.beacon
+      || kind === SignalKind.announce
+      || kind === SignalKind.relay
+      || kind === SignalKind.feedback;
   }
 }
 
@@ -40,6 +55,7 @@ export class NeuralSignal {
     this.ttl = Number(fields.ttl ?? 8);
     this.routePath = [...(fields.routePath ?? [])].map(String);
     this.returnPath = [...(fields.returnPath ?? [])].map(String);
+    this.paths = [...(fields.paths ?? [])].map((path) => BeaconPath.from(path));
     this.payload = fields.payload ?? null;
   }
 
@@ -53,17 +69,49 @@ export class NeuralSignal {
   }
 
   /**
-   * Coalescing key. Announce retries of A->B are one semantic request; feedback
-   * is keyed by the request it acknowledges; beacons are unique per sequence.
+   * Coalescing key. Announce retries of A->B are one semantic request; relays are
+   * one message each; feedback is keyed by the request it acknowledges; beacons
+   * merge by origin and sequence.
    */
   get key() {
     if (this.kind === SignalKind.announce) {
       return `${this.kind}:${this.originAddress}:${this.targetAddress}`;
     }
-    if (this.kind === SignalKind.feedback) {
+    if (this.kind === SignalKind.relay) {
       return `${this.kind}:${this.originAddress}:${this.targetAddress}:${this.sequenceId}`;
     }
+    if (this.kind === SignalKind.feedback) {
+      return `${this.kind}:${this.originAddress}:${this.targetAddress}:${this.sequenceId}:${this.routePath.join('>')}`;
+    }
     return `${this.kind}:${this.originAddress}:${this.sequenceId}`;
+  }
+
+  /**
+   * Bundle identity. An announce keeps one packet row per arrival path even
+   * though all of them are one semantic request for retry/coalescing purposes.
+   */
+  get bundleKey() {
+    if (this.kind === SignalKind.announce) {
+      return `${this.key}|${this.visited.join('>')}`;
+    }
+    return this.key;
+  }
+
+  withPaths(paths) {
+    return new NeuralSignal({
+      ...this.metadata(),
+      paths,
+      embedding: this.embedding,
+    });
+  }
+
+  /** A routing probe for one cell of a beacon row: same row, named destination. */
+  withTarget(targetAddress) {
+    return new NeuralSignal({
+      ...this.metadata(),
+      targetAddress,
+      embedding: this.embedding,
+    });
   }
 
   withEmbedding(embedding, embeddingDepth = this.embeddingDepth) {
@@ -111,6 +159,7 @@ export class NeuralSignal {
       ttl: this.ttl,
       routePath: this.routePath,
       returnPath: this.returnPath,
+      paths: this.paths.map((path) => path.toArray()),
       payload: this.payload,
     };
   }
@@ -119,12 +168,26 @@ export class NeuralSignal {
     return new NeuralSignal({ ...fields, embedding: PathEmbedding.self() });
   }
 
-  static beacon({ originAddress, sequenceId, ttl }) {
+  static beacon({ originAddress, sequenceId, ttl, paths }) {
     return new NeuralSignal({
       kind: SignalKind.beacon,
       originAddress,
       sequenceId,
       ttl,
+      paths,
+      embedding: PathEmbedding.self(),
+      embeddingDepth: 1,
+    });
+  }
+
+  static relay({ originAddress, targetAddress, sequenceId, ttl, payload }) {
+    return new NeuralSignal({
+      kind: SignalKind.relay,
+      originAddress,
+      targetAddress,
+      sequenceId,
+      ttl,
+      payload,
       embedding: PathEmbedding.self(),
       embeddingDepth: 1,
     });

@@ -95,7 +95,8 @@ function makeHost(fields = {}) {
     '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     new Uint8Array(32),
     {
-      routeOracle: () => true,
+      role: fields.role ?? 'peer',
+      routeOracle: fields.routeOracle ?? (() => true),
     },
     runtime,
   );
@@ -104,6 +105,15 @@ function makeHost(fields = {}) {
   host.p2pNetwork.findPeer = async () => {};
   host.meshNetwork.findPeer = async () => {};
   return host;
+}
+
+function connectPeer(host, peerAddress = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') {
+  host.subscribe('inbound', 'outbound', peerAddress, 10_000, '1', '7');
+  const subscription = Array.from(host.subscriptions.values()).at(-1);
+  const peerSession = new TestPeerSession();
+  subscription.attachPeerSession(peerSession);
+  peerSession.onConnected();
+  return subscription;
 }
 
 test('subscribe keeps the same connected scoped subscription', () => {
@@ -215,4 +225,109 @@ test('peer waiting rejection moves requester to rejected state', () => {
 
   assert.equal(events.at(-1).type, 'PeerWaitRejected');
   assert.equal(events.at(-1).state, 'PeerRejected');
+});
+
+test('a sibling tab relays control traffic that this host owns a route for', () => {
+  const host = makeHost({ role: 'lobby' });
+  connectPeer(host);
+  const relayed = [];
+  host.p2pNetwork.sendTo = (target, fields) => relayed.push({ target, type: fields.type });
+
+  host.relayLocalControl({
+    id: 'announce-1',
+    type: 'p2p-mst-announce',
+    from: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    to: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    senderRole: 'table',
+    senderInstanceId: 'table-instance',
+    ttl: 8,
+  });
+
+  assert.deepEqual(relayed, [{
+    target: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    type: 'p2p-mst-announce',
+  }]);
+  host.close();
+});
+
+test('relaying skips messages for this address and messages from this role', () => {
+  const host = makeHost({ role: 'lobby' });
+  connectPeer(host);
+  const relayed = [];
+  host.p2pNetwork.sendTo = (target) => relayed.push(target);
+
+  host.relayLocalControl({
+    id: 'self-1',
+    type: 'p2p-mst-announce',
+    from: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    senderRole: 'table',
+    ttl: 8,
+  });
+  host.relayLocalControl({
+    id: 'lobby-1',
+    type: 'p2p-mst-announce',
+    from: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    to: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    senderRole: 'lobby',
+    ttl: 8,
+  });
+
+  assert.deepEqual(relayed, []);
+  host.close();
+});
+
+test('a host without neighbours never relays', () => {
+  const host = makeHost({ role: 'table' });
+  const relayed = [];
+  host.p2pNetwork.sendTo = (target) => relayed.push(target);
+
+  host.relayLocalControl({
+    id: 'announce-2',
+    type: 'p2p-mst-announce',
+    from: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    to: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    senderRole: 'lobby',
+    ttl: 8,
+  });
+
+  assert.deepEqual(relayed, []);
+  host.close();
+});
+
+test('a known app route defers the mesh fallback', () => {
+  const host = makeHost({ role: 'table' });
+  const subscription = connectPeer(host);
+  subscription.handleDisconnected(subscription.peerSession);
+  let meshLookups = 0;
+  host.meshNetwork.findPeer = async () => {
+    meshLookups += 1;
+  };
+
+  host.requestMeshFallback(subscription.peerAddress.toString());
+
+  assert.equal(meshLookups, 0);
+  host.close();
+});
+
+test('without an app route the mesh fallback still runs', () => {
+  const host = makeHost({ role: 'table', routeOracle: () => false });
+  const subscription = host.subscribe(
+    'inbound',
+    'outbound',
+    '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    10_000,
+    '1',
+    '7').ok;
+  assert.equal(subscription, true);
+  const created = Array.from(host.subscriptions.values()).at(-1);
+  let meshLookups = 0;
+  host.meshNetwork.findPeer = async () => {
+    meshLookups += 1;
+  };
+
+  host.requestMeshFallback(created.peerAddress.toString());
+
+  assert.equal(meshLookups, 1);
+  host.close();
 });

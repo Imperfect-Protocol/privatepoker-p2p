@@ -51,6 +51,11 @@ export class NeuralRoutingNetwork {
   /**
    * Ask the overlay to find `subscription.peerAddress`. This only queues one
    * addressed announce; the stun window decides when and where it actually goes.
+   *
+   * The announce goes through `broadcastControl` so sibling tabs of the same
+   * browser can carry it over an edge they already own. A table tab that has
+   * no neighbour of its own is relayed by the lobby tab instead of falling
+   * back to the mesh.
    */
   async findPeer(subscription) {
     const peerAddress = subscription.peerAddress.toString();
@@ -63,7 +68,7 @@ export class NeuralRoutingNetwork {
       tableId: subscription.tableId,
       peerAddress,
     });
-    this.node.requestAnnounce(peerAddress, {
+    const payload = this.network.publishDiscovery({
       type: 'p2p-mst-announce',
       from: this.network.address.toString(),
       to: peerAddress,
@@ -75,11 +80,12 @@ export class NeuralRoutingNetwork {
       lobbyId: subscription.lobbyId,
       tableId: subscription.tableId,
     });
+    this.node.requestAnnounce(peerAddress, payload);
   }
 
-  /** Route an addressed control message through the overlay. */
+  /** Route one addressed control message as a point through the overlay. */
   sendTo(targetAddress, fields) {
-    this.node.requestAnnounce(String(targetAddress), fields);
+    this.node.requestRelay(String(targetAddress), fields);
   }
 
   receiveBundle(bundle, senderAddress) {

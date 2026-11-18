@@ -20,7 +20,9 @@ export class SignalRouter {
 
   routeWeight(signal, neighbourAddress, epoch) {
     const sources = this.signatures.sourceWeights(signal);
-    const targets = this.signatures.targetWeights(signal);
+    const targets = signal.kind === SignalKind.beacon
+      ? this.signatures.rowWeights()
+      : this.signatures.targetWeights(signal);
     const neighbours = this.signatures.neighbourWeights(neighbourAddress);
     let expected = 0;
     sources.forEach(([source, sourceWeight]) => {

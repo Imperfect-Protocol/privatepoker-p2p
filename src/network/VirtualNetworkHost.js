@@ -149,8 +149,50 @@ export class VirtualNetworkHost {
     this.sendControlToConnectedPeers(message);
   }
 
+  /**
+   * A discovery announce: post the control locally so a sibling tab can relay it,
+   * and return the same fields for this node's own addressed announce. The
+   * announce (not a relay) owns retries and the mesh fallback.
+   */
+  publishDiscovery(fields) {
+    const message = ControlMessage.create(
+      fields,
+      this.runtime,
+      this.address.toString(),
+      this.config.controlTtl,
+      this.instanceId,
+    );
+    this.seenControlMessages.add(message.id);
+    this.sendControlLocally(message);
+    return message.toFields();
+  }
+
   sendControlLocally(message) {
     this.controlBus.post(message);
+  }
+
+  /**
+   * Carry a control message that a sibling tab published for a remote peer.
+   *
+   * Tabs of one browser share an address but own separate overlays, so a table
+   * tab with no neighbours cannot reach anyone on its own. Whichever sibling
+   * already has a P2P edge forwards the message; the role check keeps the
+   * sender's own role from echoing it and the address check keeps a tab from
+   * relaying messages that were addressed to itself.
+   */
+  relayLocalControl(message) {
+    if (!this.connectedSubscriptions.size) return;
+    if (!message.to || message.to === this.address.toString()) return;
+    if (typeof message.ttl === 'number' && message.ttl <= 0) return;
+    if (message.senderRole && message.senderRole === this.config.role) return;
+    VirtualNetworkConsoleLogger.log('neural.relay.control', {
+      address: this.address.toString(),
+      peerAddress: message.to,
+      messageType: message.type,
+      senderRole: message.senderRole,
+      role: this.config.role,
+    });
+    this.p2pNetwork.sendTo(message.to, { ...message });
   }
 
   sendControlToConnectedPeers(message) {
@@ -189,6 +231,15 @@ export class VirtualNetworkHost {
     if (this.connectedSubscriptions.has(peerAddress)) return;
     const subscription = this.findSubscriptionByPeer(peerAddress);
     if (!subscription) return;
+    if (this.config.knowsRoute(peerAddress, subscription.lobbyId, subscription.tableId)) {
+      VirtualNetworkConsoleLogger.log('neural.fallback.known-route', {
+        address: this.address.toString(),
+        peerAddress,
+        lobbyId: subscription.lobbyId,
+        tableId: subscription.tableId,
+      });
+      return;
+    }
     VirtualNetworkConsoleLogger.log('neural.fallback.request', {
       address: this.address.toString(),
       peerAddress,
@@ -220,6 +271,8 @@ export class VirtualNetworkHost {
       this.p2pNetwork.receiveBundle(message.neural, sender);
       return;
     }
+
+    if (source === 'local') this.relayLocalControl(message);
 
     if (source === 'peer') {
       this.emitReceivedSignal(message);
@@ -790,8 +843,22 @@ export class VirtualNetworkHost {
     return message.type === 'sdp-offer' || message.type === 'sdp-answer';
   }
 
+  findSubscriptionByPeerScope(peerAddress, lobbyId, tableId) {
+    const wantedPeer = Address.from(peerAddress).toString();
+    const wantedLobbyId = String(lobbyId ?? this.config.lobbyId);
+    const wantedTableId = String(tableId ?? this.config.tableId);
+    for (const subscription of this.subscriptions.values()) {
+      if (subscription.peerAddress.toString() !== wantedPeer) continue;
+      if (subscription.lobbyId !== wantedLobbyId) continue;
+      if (subscription.tableId !== wantedTableId) continue;
+      return subscription;
+    }
+    return null;
+  }
+
   shouldCreateP2POffer(message) {
-    const subscription = this.findSubscriptionByMessage(message);
+    const subscription = this.findSubscriptionByMessage(message)
+      ?? this.findSubscriptionByPeerScope(message.from, message.lobbyId, message.tableId);
     if (!subscription) return true;
     if (subscription.peerAddress.toString() !== Address.from(message.from).toString()) return true;
     if (subscription.state !== ConnectionState.TRY_P2P_NETWORK) return true;

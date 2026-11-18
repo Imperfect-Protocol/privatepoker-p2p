@@ -1,5 +1,6 @@
 import { NeuralSignal, SignalKind } from './NeuralSignal.js';
 import { NeuralRoutingConfig } from './NeuralRoutingConfig.js';
+import { BeaconReminders } from './BeaconReminders.js';
 import { PathEmbedding } from './PathEmbedding.js';
 import { SparseHebbianTensor } from './SparseHebbianTensor.js';
 import { SignalSignatures } from './SignalSignatures.js';
@@ -19,10 +20,21 @@ const MAX_SEEN_SIGNALS = 4096;
 /**
  * One node of the neural overlay.
  *
- * Receiving only learns, coalesces and arms the stun window. All outbound work
+ * Receiving only learns, merges and arms the stun window. All outbound work
  * happens in `flush()` when the window closes, which emits at most one bundle
  * per selected neighbour. That single rule is what turns a flood into a routed
  * stream of bundles.
+ *
+ * Three signal shapes have three different tensor effects:
+ *
+ * - an announce or relay is a point `A->B`, so it rewards exactly that cell;
+ * - a beacon is a row `A->*`, so it rewards every target position of A's row
+ *   for the direction it travelled;
+ * - feedback is the reverse-route reward for a point that succeeded.
+ *
+ * Beacons merge by origin (the row), announces merge by semantic request but
+ * keep one copy per arrival path, and relays keep their own identity so two
+ * consecutive messages are never mistaken for retries.
  */
 export class NeuralNode {
   constructor(fields) {
@@ -65,11 +77,21 @@ export class NeuralNode {
     this.active = false;
     this.wakeTimer = null;
     this.pendingSignals = new Map();
+    this.pendingAnnounces = new Map();
+    this.pendingBeacons = new Map();
+    this.pendingRelays = new Map();
     this.pendingDiscoveries = new Map();
     this.seenSignals = new Map();
     this.awaitingAnnounces = new Map();
+    this.reminders = new BeaconReminders({
+      address: this.address,
+      ttlMs: this.config.routeReminderTtlMs,
+      maxPaths: this.config.maxRouteReminders,
+      now: this.now,
+    });
     this.nextBeaconSequence = 0;
     this.nextAnnounceSequence = 0;
+    this.nextRelaySequence = 0;
     this.lastBeaconAt = null;
     this.timerFires = 0;
     this.flushing = false;
@@ -92,10 +114,15 @@ export class NeuralNode {
       packetsSent: 0,
       signalCopiesSent: 0,
       beaconsSent: 0,
+      beaconsMerged: 0,
+      rowsRewarded: 0,
       announcesSent: 0,
+      relaysSent: 0,
+      relaysDelivered: 0,
       feedbackGenerated: 0,
       discoveriesDelivered: 0,
       feedbackDelivered: 0,
+      pathsAdvertised: 0,
       maxBundleSizeSent: 0,
       maxClusterSize: 0,
     };
@@ -117,6 +144,9 @@ export class NeuralNode {
     this.clearWake();
     this.stun.close();
     this.pendingSignals.clear();
+    this.pendingAnnounces.clear();
+    this.pendingBeacons.clear();
+    this.pendingRelays.clear();
     this.pendingDiscoveries.clear();
     this.awaitingAnnounces.clear();
     this.trace?.debug('node.stop', { metrics: this.metrics });
@@ -142,8 +172,8 @@ export class NeuralNode {
   }
 
   /**
-   * Build this node's beacon if it is due. Beacons are created inside the timer
-   * flush so they share one packet with pending announces and relays.
+   * Build this node's row beacon if it is due. The row paths are attached per
+   * destination during routing; this only creates the presence signal.
    */
   takeDueBeacon() {
     if (!this.active) return null;
@@ -185,14 +215,38 @@ export class NeuralNode {
       attempt: signal.routeAttempt,
       payloadType: payload?.type ?? null,
     });
-    this.coalesce(signal);
+    this.coalesceAnnounce(signal);
     if (!this.stun.stunned) this.stun.flushSoon();
   }
 
-  /** A direct WebRTC edge formed: confirm the direction toward that peer. */
+  /** Queue one addressed control message; each relay is its own point. */
+  requestRelay(targetAddress, payload) {
+    if (!this.active) return;
+    const target = String(targetAddress);
+    if (target === this.address) return;
+    const signal = NeuralSignal.relay({
+      originAddress: this.address,
+      targetAddress: target,
+      sequenceId: this.nextRelaySequence,
+      ttl: this.config.ttl,
+      payload,
+    });
+    this.nextRelaySequence += 1;
+    this.metrics.relaysSent += 1;
+    this.trace?.debug('relay.request', {
+      target,
+      sequenceId: signal.sequenceId,
+      payloadType: payload?.type ?? null,
+    });
+    this.coalesceSignal(signal);
+    if (!this.stun.stunned) this.stun.flushSoon();
+  }
+
+  /** A direct WebRTC edge formed: add the edge to our row and confirm direction. */
   confirmNeighbour(peerAddress) {
     const peer = String(peerAddress);
     this.awaitingAnnounces.delete(peer);
+    this.reminders.add([this.address, peer]);
     const signal = new NeuralSignal({
       kind: SignalKind.beacon,
       originAddress: peer,
@@ -211,7 +265,9 @@ export class NeuralNode {
 
   /** Warm-start the tensor for a neighbour the transport already trusts. */
   neighbourRemoved(peerAddress) {
-    this.trace?.debug('neighbour.removed', { peer: String(peerAddress) });
+    const peer = String(peerAddress);
+    this.reminders.removeNeighbour(peer);
+    this.trace?.debug('neighbour.removed', { peer });
   }
 
   /**
@@ -260,19 +316,13 @@ export class NeuralNode {
         this.metrics.signalsDroppedHopLimit += 1;
         continue;
       }
-      const previous = this.seenSignals.get(signal.key);
-      const isFirst = previous === undefined;
-      const betterPath = previous !== undefined && signal.hopCount < previous.hops;
-      const broaderRetry = previous !== undefined && signal.routeAttempt > previous.attempt;
-      if (previous !== undefined && !(betterPath || broaderRetry)) {
+      const seenKey = this.#seenKey(signal, sender);
+      if (this.seenSignals.has(seenKey)) {
         this.metrics.signalsDroppedAsDuplicate += 1;
         this.trace?.trace('receive.duplicate', { signal: signal.signalId, sender });
         continue;
       }
-      this.seenSignals.set(signal.key, {
-        hops: isFirst || betterPath ? signal.hopCount : previous.hops,
-        attempt: Math.max(previous?.attempt ?? 0, signal.routeAttempt),
-      });
+      this.seenSignals.set(seenKey, true);
       this.pruneSeenSignals();
 
       const depth = Math.min(PathEmbedding.HOP_BINS, signal.embeddingDepth + 1);
@@ -290,13 +340,11 @@ export class NeuralNode {
         hopCount: localized.hopCount,
         depth,
         ttl: localized.ttl,
-        isFirst,
-        betterPath,
-        broaderRetry,
+        paths: localized.paths.length,
       });
 
-      this.applyLocally(localized, sender, isFirst || betterPath);
-      if (isFirst || betterPath) this.metrics.signalsAccepted += 1;
+      this.applyLocally(localized, sender);
+      this.metrics.signalsAccepted += 1;
       accepted += 1;
     }
 
@@ -305,43 +353,81 @@ export class NeuralNode {
     this.metrics.maxClusterSize = Math.max(this.metrics.maxClusterSize, this.stun.messagesInCluster);
   }
 
-  applyLocally(signal, sender, fresh) {
+  /**
+   * Duplicate identity per arrival path. A row beacon is keyed by its sender, an
+   * announce by the exact path it travelled, a relay by its message id and
+   * feedback by its route.
+   */
+  #seenKey(signal, sender) {
+    if (signal.kind === SignalKind.beacon) return `${signal.key}|${sender}`;
+    if (signal.kind === SignalKind.announce) return `${signal.bundleKey}|${sender}`;
+    return signal.key;
+  }
+
+  applyLocally(signal, sender) {
     if (signal.kind === SignalKind.feedback) {
-      if (fresh) this.applySuccessFeedbackReward(signal);
+      this.applySuccessFeedbackReward(signal);
       if (signal.originAddress === this.address && signal.returnPath.length === 0) {
         if (signal.targetAddress !== null) this.awaitingAnnounces.delete(signal.targetAddress);
+        this.reminders.rememberRoute(signal.routePath);
         this.metrics.feedbackDelivered += 1;
         this.trace?.debug('feedback.delivered', { signal: signal.signalId });
         return;
       }
-      this.coalesce(signal);
+      this.coalesceSignal(signal);
       return;
     }
 
-    if (signal.kind === SignalKind.announce && signal.targetAddress === this.address) {
-      const previous = this.pendingDiscoveries.get(signal.originAddress);
-      if (previous === undefined || signal.hopCount < previous.hopCount) {
-        this.pendingDiscoveries.set(signal.originAddress, signal);
+    if (signal.kind === SignalKind.announce) {
+      if (signal.targetAddress === this.address) {
+        this.rememberDiscovery(signal);
+        return;
       }
-      this.trace?.debug('announce.discovered', {
-        origin: signal.originAddress,
-        hopCount: signal.hopCount,
-        payloadType: signal.payload?.type ?? null,
-      });
+      this.coalesceAnnounce(signal);
       return;
     }
 
-    if (signal.kind === SignalKind.beacon && fresh) {
-      this.applyEmbeddingReward(signal, sender, signal.hopCount);
+    if (signal.kind === SignalKind.relay) {
+      if (signal.targetAddress === this.address) {
+        this.pendingRelays.set(signal.key, signal);
+        return;
+      }
+      this.coalesceSignal(signal);
+      return;
     }
-    this.coalesce(signal);
+
+    this.mergeBeacon(signal, sender);
+    this.applyRowReward(signal, sender, signal.hopCount);
+    this.metrics.beaconsMerged += 1;
   }
 
-  coalesce(signal) {
+  /**
+   * A targeted announce arrived. Keep one copy per distinct arrival path: two
+   * equal routes that converge must both survive, so the target returns feedback
+   * down both and both branches are reinforced.
+   */
+  rememberDiscovery(signal) {
+    const key = signal.key;
+    const entry = this.pendingDiscoveries.get(key) ?? { paths: new Map() };
+    const pathKey = [...signal.visited, this.address].join('>');
+    const current = entry.paths.get(pathKey);
+    if (current === undefined || signal.hopCount < current.hopCount) {
+      entry.paths.set(pathKey, signal);
+    }
+    this.pendingDiscoveries.set(key, entry);
+    this.reminders.rememberRoute([...signal.visited, this.address].reverse());
+    this.trace?.debug('announce.discovered', {
+      origin: signal.originAddress,
+      hopCount: signal.hopCount,
+      paths: entry.paths.size,
+      payloadType: signal.payload?.type ?? null,
+    });
+  }
+
+  /** Relays and feedback keep one copy per logical message. */
+  coalesceSignal(signal) {
     const current = this.pendingSignals.get(signal.key);
-    if (current === undefined
-      || signal.routeAttempt > current.routeAttempt
-      || (signal.routeAttempt === current.routeAttempt && signal.hopCount < current.hopCount)) {
+    if (current === undefined || signal.hopCount < current.hopCount) {
       this.pendingSignals.set(signal.key, signal);
       this.trace?.trace('signal.coalesce', {
         key: signal.key,
@@ -353,6 +439,52 @@ export class NeuralNode {
     this.trace?.trace('signal.coalesce.kept', { key: signal.key, queue: this.pendingSignals.size });
   }
 
+  /**
+   * Annonces merge by semantic request, but keep one copy per arrival path. A
+   * broader retry clears the paths of weaker attempts.
+   */
+  coalesceAnnounce(signal) {
+    const key = signal.key;
+    const entry = this.pendingAnnounces.get(key) ?? { attempt: signal.routeAttempt, paths: new Map() };
+    if (signal.routeAttempt > entry.attempt) {
+      entry.paths.clear();
+      entry.attempt = signal.routeAttempt;
+    }
+    if (signal.routeAttempt < entry.attempt) return;
+    const pathKey = signal.visited.join('>');
+    const current = entry.paths.get(pathKey);
+    if (current === undefined || signal.hopCount < current.hopCount) {
+      entry.paths.set(pathKey, signal);
+    }
+    this.pendingAnnounces.set(key, entry);
+    this.trace?.trace('announce.coalesce', {
+      key,
+      attempt: entry.attempt,
+      paths: entry.paths.size,
+    });
+  }
+
+  /** Merge a received row into this window's copy of that origin's row. */
+  mergeBeacon(signal, sender) {
+    const entry = this.pendingBeacons.get(signal.originAddress)
+      ?? { signal, arrivals: new Set(), paths: new Map() };
+    entry.arrivals.add(sender);
+    if (signal.hopCount < entry.signal.hopCount
+      || (signal.hopCount === entry.signal.hopCount && signal.sequenceId > entry.signal.sequenceId)) {
+      entry.signal = signal;
+    }
+    for (const path of signal.paths) {
+      if (path.nodes[0] === signal.originAddress) entry.paths.set(path.key, path);
+    }
+    this.pendingBeacons.set(signal.originAddress, entry);
+    this.trace?.trace('beacon.merge', {
+      origin: signal.originAddress,
+      arrivals: [...entry.arrivals],
+      paths: entry.paths.size,
+    });
+  }
+
+  /** Point reward: one source cell, one target cell, one neighbour. */
   applyEmbeddingReward(signal, forwardNeighbourAddress, forwardHop) {
     if (!this.config.learningEnabled) return;
     const learningSignal = signal.withHopCount(forwardHop ?? signal.hopCount);
@@ -385,6 +517,42 @@ export class NeuralNode {
     });
   }
 
+  /**
+   * Row reward: a beacon `A->*` reinforces every target position of A's row for
+   * the direction it travelled. Eventually different columns settle on different
+   * next hops, but one arrival updates the whole row at once.
+   */
+  applyRowReward(signal, forwardNeighbourAddress, forwardHop) {
+    if (!this.config.learningEnabled) return;
+    const learningSignal = signal.withHopCount(forwardHop ?? signal.hopCount);
+    const sources = this.signatures.sourceWeights(learningSignal);
+    const targets = this.signatures.rowWeights();
+    const neighbours = this.signatures.neighbourWeights(forwardNeighbourAddress);
+    const rewardScale = this.config.hebbianReward / DEFAULT_HEBBIAN_REWARD;
+    const reward = BEACON_REWARD * rewardScale * signal.coefficient
+      / (1 + 0.25 * Math.max(0, learningSignal.hopCount));
+    sources.forEach(([source, sourceWeight]) => {
+      targets.forEach(([target, targetWeight]) => {
+        neighbours.forEach(([neighbour, neighbourWeight]) => {
+          this.tensor.reward(
+            source,
+            target,
+            neighbour,
+            this.timerFires,
+            reward * sourceWeight * targetWeight * neighbourWeight,
+          );
+        });
+      });
+    });
+    this.metrics.rowsRewarded += 1;
+    this.trace?.trace('tensor.row-reward', {
+      origin: signal.originAddress,
+      neighbour: String(forwardNeighbourAddress),
+      reward: Math.round(reward * 10000) / 10000,
+      combinations: this.tensor.storedCombinations,
+    });
+  }
+
   applySuccessFeedbackReward(signal) {
     const index = signal.routePath.indexOf(this.address);
     if (index < 0 || index >= signal.routePath.length - 1) return;
@@ -404,7 +572,11 @@ export class NeuralNode {
     this.timerFires += 1;
     try {
       this.denoiseNodeTensor();
-      const pending = this.pendingSignals.size + this.pendingDiscoveries.size;
+      const pending = this.pendingSignals.size
+        + this.pendingAnnounces.size
+        + this.pendingBeacons.size
+        + this.pendingRelays.size
+        + this.pendingDiscoveries.size;
       const work = this.collectWork();
       this.trace?.debug('flush.start', {
         timerFires: this.timerFires,
@@ -428,28 +600,66 @@ export class NeuralNode {
   }
 
   collectWork() {
-    const work = [...this.pendingSignals.values()];
+    const work = [];
+    for (const signal of this.pendingSignals.values()) {
+      work.push({ signal, arrivals: null, own: false });
+    }
     this.pendingSignals.clear();
 
-    for (const announce of this.pendingDiscoveries.values()) {
+    for (const announce of this.pendingAnnounces.values()) {
+      for (const signal of announce.paths.values()) {
+        work.push({ signal, arrivals: null, own: false });
+      }
+    }
+    this.pendingAnnounces.clear();
+
+    for (const entry of this.pendingBeacons.values()) {
+      work.push({ signal: entry.signal, arrivals: entry.arrivals, own: false, paths: entry.paths });
+    }
+    this.pendingBeacons.clear();
+
+    for (const discovery of this.pendingDiscoveries.values()) {
+      const paths = [...discovery.paths.values()].sort((left, right) => left.hopCount - right.hopCount);
+      const representative = paths[0];
       this.metrics.discoveriesDelivered += 1;
       this.trace?.debug('announce.deliver', {
-        origin: announce.originAddress,
-        hopCount: announce.hopCount,
-        payloadType: announce.payload?.type ?? null,
+        origin: representative.originAddress,
+        hopCount: representative.hopCount,
+        paths: paths.length,
+        payloadType: representative.payload?.type ?? null,
       });
-      if (announce.payload) {
-        this.transport.deliverControl(announce.payload, announce.originAddress);
+      if (representative.payload) {
+        this.transport.deliverControl(representative.payload, representative.originAddress);
       }
-      const feedback = NeuralSignal.feedbackFor(announce, this.address, this.config.ttl);
-      work.push(feedback);
-      this.metrics.feedbackGenerated += 1;
+      for (const signal of paths) {
+        work.push({
+          signal: NeuralSignal.feedbackFor(signal, this.address, this.config.ttl),
+          arrivals: null,
+          own: false,
+        });
+        this.metrics.feedbackGenerated += 1;
+      }
     }
     this.pendingDiscoveries.clear();
 
+    for (const relay of this.pendingRelays.values()) {
+      this.metrics.relaysDelivered += 1;
+      this.trace?.debug('relay.deliver', {
+        origin: relay.originAddress,
+        sequenceId: relay.sequenceId,
+        payloadType: relay.payload?.type ?? null,
+      });
+      if (relay.payload) {
+        this.transport.deliverControl(relay.payload, relay.originAddress);
+      }
+    }
+    this.pendingRelays.clear();
+
     this.addDueRetries(work);
     const beacon = this.takeDueBeacon();
-    if (beacon !== null) work.push(beacon);
+    if (beacon !== null) {
+      work.push({ signal: beacon, arrivals: new Set(), own: true, paths: this.reminders.row() });
+    }
     return work;
   }
 
@@ -477,7 +687,7 @@ export class NeuralNode {
         payload: entry.payload,
       });
       this.nextAnnounceSequence += 1;
-      work.push(retry);
+      work.push({ signal: retry, arrivals: null, own: false });
       this.awaitingAnnounces.set(target, {
         deadline: this.#announceRetryDeadline(),
         attempt: entry.attempt + 1,
@@ -517,8 +727,10 @@ export class NeuralNode {
   routeWork(work) {
     const neighbours = this.connectedNeighbours;
     const byDestination = new Map();
-    for (const signal of work) {
+    for (const entry of work) {
+      const signal = entry.signal;
       if (signal.kind === SignalKind.announce && signal.targetAddress === this.address) continue;
+      if (signal.kind === SignalKind.relay && signal.targetAddress === this.address) continue;
       if (signal.hopCount >= this.config.maxHops) {
         this.metrics.signalsDroppedHopLimit += 1;
         continue;
@@ -527,19 +739,13 @@ export class NeuralNode {
         this.metrics.signalsDroppedTtl += 1;
         continue;
       }
+      if (signal.kind === SignalKind.beacon) {
+        this.routeBeaconRow(entry, neighbours, byDestination);
+        continue;
+      }
       const choice = this.router.chooseDestinations(signal, neighbours, this.timerFires);
       for (const destination of choice.destinations) {
-        const forwarded = signal.forwardedBy(this.address, {
-          ttlEnabled: this.config.ttlEnabled,
-          coefficientDecay: this.config.coefficientDecay,
-        });
-        const bucket = byDestination.get(destination) ?? new Map();
-        const previous = bucket.get(forwarded.key);
-        bucket.set(
-          forwarded.key,
-          previous === undefined ? forwarded : SignalRouter.preferBundledItem(previous, forwarded),
-        );
-        byDestination.set(destination, bucket);
+        this.addToBundle(byDestination, destination, signal);
       }
       this.noteAnnounceAttempt(signal);
       this.trace?.trace('route.choice', {
@@ -550,6 +756,79 @@ export class NeuralNode {
         smart: choice.smart,
       });
     }
+    return this.materializeBundles(byDestination);
+  }
+
+  /**
+   * Split one row into per-neighbour copies.
+   *
+   * This node's own row goes out exactly as described: each cell only to its
+   * next hop, presence to everyone else. A forwarded row is tensor-gated as a
+   * whole, and any reminder that continues through this node also keeps its
+   * explicit next hop so the route does not stall. The arrival neighbour is
+   * excluded before either rule runs; reflection is never a routing outcome.
+   */
+  routeBeaconRow(entry, neighbours, byDestination) {
+    const available = neighbours.filter((neighbour) => !(entry.arrivals?.has(neighbour) ?? false));
+    if (available.length === 0) return;
+    const row = entry.signal;
+    const selected = new Map();
+
+    const select = (destination, path) => {
+      const paths = selected.get(destination) ?? new Map();
+      if (path !== null) paths.set(path.key, path);
+      selected.set(destination, paths);
+    };
+
+    if (entry.own) {
+      for (const destination of available) select(destination, null);
+      for (const path of entry.paths.values()) {
+        const nextHop = path.nextHopFrom(this.address);
+        if (nextHop !== null && available.includes(nextHop)) select(nextHop, path);
+      }
+    } else {
+      const gated = this.router.chooseDestinations(row, available, this.timerFires);
+      for (const destination of gated.destinations) select(destination, null);
+      for (const path of entry.paths.values()) {
+        const endpoint = path.nodes[path.nodes.length - 1];
+        if (endpoint === this.address) continue;
+        const probe = row.withTarget(endpoint);
+        const cell = this.router.chooseDestinations(probe, available, this.timerFires);
+        for (const destination of cell.destinations) select(destination, path);
+        const nextHop = path.nextHopFrom(this.address);
+        if (nextHop !== null && available.includes(nextHop)) select(nextHop, path);
+      }
+    }
+
+    for (const [destination, paths] of selected) {
+      this.addToBundle(byDestination, destination, row.withPaths([...paths.values()]));
+      this.metrics.pathsAdvertised += paths.size;
+      if (!entry.own) this.applyRowReward(row, destination, row.hopCount);
+    }
+    this.trace?.trace('beacon.split', {
+      origin: row.originAddress,
+      own: entry.own,
+      available,
+      destinations: [...selected.keys()],
+      arrival: [...(entry.arrivals ?? [])],
+    });
+  }
+
+  addToBundle(byDestination, destination, signal) {
+    const forwarded = signal.forwardedBy(this.address, {
+      ttlEnabled: this.config.ttlEnabled,
+      coefficientDecay: this.config.coefficientDecay,
+    });
+    const bucket = byDestination.get(destination) ?? new Map();
+    const previous = bucket.get(forwarded.bundleKey);
+    bucket.set(
+      forwarded.bundleKey,
+      previous === undefined ? forwarded : SignalRouter.preferBundledItem(previous, forwarded),
+    );
+    byDestination.set(destination, bucket);
+  }
+
+  materializeBundles(byDestination) {
     const bundles = new Map();
     for (const [destination, bucket] of byDestination) {
       bundles.set(destination, [...bucket.values()]);
@@ -584,6 +863,7 @@ export class NeuralNode {
       destination,
       signals: ordered.length,
       kinds: [...new Set(ordered.map((signal) => signal.kind))],
+      paths: ordered.reduce((total, signal) => total + signal.paths.length, 0),
       coefficientCount: encoded.value.coefficientCount,
       codec: encoded.value.codec,
     });
