@@ -13,7 +13,7 @@ function makeNetwork() {
   };
   return {
     address: { toString: () => '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
-    config: { role: 'lobby' },
+    config: { role: 'lobby', lobbyId: '1' },
     broadcasts,
     subscriptions,
     findSubscriptionByPeer: () => (created.length > 0 ? created[0] : null),
@@ -48,7 +48,29 @@ test('a table request creates exactly one lobby-owned background subscription', 
 
   assert.equal(network.subscriptions.length, 1);
   assert.deepEqual(network.subscriptions[0].slice(3), [20_000, '1', '0']);
-  assert.equal(keeper.requests.get('0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:1').length, 1);
+  assert.equal(keeper.requests.get('0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb').length, 1);
+});
+
+test('a request with an empty peer address is logged as an error and ignored', () => {
+  const network = makeNetwork();
+  const keeper = new BackgroundConnectionKeeper(network);
+
+  keeper.rememberRequest(request({ peerAddress: '', requestId: 'request-empty' }));
+
+  assert.equal(keeper.requests.size, 0);
+  assert.equal(network.subscriptions.length, 0);
+  assert.equal(network.broadcasts.length, 0);
+});
+
+test('one background edge is shared across different lobby ids for the same peer', () => {
+  const network = makeNetwork();
+  const keeper = new BackgroundConnectionKeeper(network);
+
+  keeper.rememberRequest(request({ lobbyId: '1', requestId: 'request-a' }));
+  keeper.rememberRequest(request({ lobbyId: '2', requestId: 'request-b', peerAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }));
+
+  assert.equal(network.subscriptions.length, 1);
+  assert.equal(keeper.requests.get('0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb').length, 2);
 });
 
 test('a connected background edge answers pending table requests', () => {

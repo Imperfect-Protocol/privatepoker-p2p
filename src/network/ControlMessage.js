@@ -1,27 +1,13 @@
 export class ControlMessage {
   constructor(fields) {
-    this.id = fields.id;
-    this.type = fields.type;
-    this.sender = fields.sender;
-    this.senderInstanceId = fields.senderInstanceId;
-    this.senderRole = fields.senderRole;
-    this.targetRole = fields.targetRole;
-    this.targetInstanceId = fields.targetInstanceId;
-    this.initiatorInstanceId = fields.initiatorInstanceId;
-    this.responderInstanceId = fields.responderInstanceId;
-    this.from = fields.from;
-    this.to = fields.to;
-    this.subscriptionLabel = fields.subscriptionLabel;
-    this.channelLabel = fields.channelLabel;
-    this.lobbyId = fields.lobbyId;
-    this.tableId = fields.tableId;
-    this.via = fields.via;
-    this.flowId = fields.flowId;
-    this.sdp = fields.sdp;
-    this.waitingReason = fields.waitingReason;
-    this.decisionReason = fields.decisionReason;
-    this.ttl = fields.ttl;
-    this.neural = fields.neural;
+    const known = [
+      'id', 'type', 'sender', 'senderInstanceId', 'senderRole', 'targetRole',
+      'targetInstanceId', 'initiatorInstanceId', 'responderInstanceId', 'from',
+      'to', 'subscriptionLabel', 'channelLabel', 'lobbyId', 'tableId', 'via',
+      'flowId', 'sdp', 'waitingReason', 'decisionReason', 'ttl', 'neural',
+    ];
+    for (const key of Object.keys(fields)) this[key] = fields[key];
+    for (const key of known) this[key] = fields[key];
   }
 
   static create(fields, runtime, sender, ttl, senderInstanceId = undefined) {

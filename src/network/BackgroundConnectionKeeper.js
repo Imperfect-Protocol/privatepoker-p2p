@@ -3,10 +3,12 @@ import { TabMessage } from '../tabs/TabMessage.js';
 import { VirtualNetworkConsoleLogger } from '../logging/VirtualNetworkConsoleLogger.js';
 
 /**
- * Lobby-owned, in-memory record of Table tabs waiting for a peer.
+ * Lobby-owned, in-memory record of Table tabs waiting for a neighbour peer.
  *
- * The keeper never persists a route. A route exists only while this Lobby tab
- * owns a connected background subscription, and it disappears with the tab.
+ * The Lobby's background edge identity is just the peer address: the Lobby keeps
+ * a `peer -> neighbour` mapping with no lobby or table identity. A pending table
+ * request remembers its own (lobbyId, tableId) only so it can be answered on the
+ * right table tab; once the background edge is up that pair is ignored.
  */
 export class BackgroundConnectionKeeper {
   constructor(network) {
@@ -14,71 +16,69 @@ export class BackgroundConnectionKeeper {
     this.requests = new Map();
   }
 
-  static peerKey(peerAddress, lobbyId) {
-    return `${Address.from(peerAddress).toString()}:${String(lobbyId ?? '1')}`;
-  }
-
-  static peerOf(key) {
-    return String(key).split(':')[0];
-  }
-
   rememberRequest(message) {
-    const key = BackgroundConnectionKeeper.peerKey(message.peerAddress, message.lobbyId);
-    const requests = this.requests.get(key) ?? [];
+    const peerAddress = Address.from(message?.peerAddress ?? '').toString();
+    if (peerAddress.length === 0) {
+      VirtualNetworkConsoleLogger.log('lobby.find.error', {
+        address: this.network.address.toString(),
+        reason: 'empty-peer-address',
+        requestId: message?.requestId,
+        lobbyId: message?.lobbyId,
+        tableId: message?.tableId,
+      });
+      return;
+    }
+    const requests = this.requests.get(peerAddress) ?? [];
     if (!requests.some((request) => request.requestId === message.requestId)) {
       requests.push(message);
-      this.requests.set(key, requests);
+      this.requests.set(peerAddress, requests);
     }
     VirtualNetworkConsoleLogger.log('lobby.find.gossip', {
       address: this.network.address.toString(),
       requestId: message.requestId,
-      peerAddress: message.peerAddress,
+      peerAddress,
       lobbyId: message.lobbyId,
+      tableId: message.tableId,
     });
-    const subscription = this.ensureSubscription(message);
-    if (subscription?.peerSession?.isConnected()) this.answerConnected(message.peerAddress);
+    const subscription = this.ensureSubscription(peerAddress);
+    if (subscription?.peerSession?.isConnected()) this.answerConnected(peerAddress);
   }
 
-  ensureSubscription(message) {
-    const peerAddress = Address.from(message.peerAddress).toString();
-    const existing = this.network.findSubscriptionByPeer(peerAddress, message.lobbyId, '0');
+  ensureSubscription(peerAddress) {
+    const existing = this.network.findSubscriptionByPeer(peerAddress, undefined, '0');
     if (existing) return existing;
     this.network.subscribe(
       `lobby:${peerAddress}:inbound`,
       `lobby:${peerAddress}:outbound`,
       peerAddress,
       20_000,
-      message.lobbyId,
+      this.network.config.lobbyId,
       '0',
     );
-    return this.network.findSubscriptionByPeer(peerAddress, message.lobbyId, '0');
+    return this.network.findSubscriptionByPeer(peerAddress, undefined, '0');
   }
 
   answerConnected(peerAddress) {
     const wanted = Address.from(peerAddress).toString();
-    Array.from(this.requests.keys()).forEach((key) => {
-      if (BackgroundConnectionKeeper.peerOf(key) !== wanted) return;
-      this.requests.get(key).forEach((request) => this.respond(request, 'route-ready'));
-      this.requests.delete(key);
-      VirtualNetworkConsoleLogger.log('lobby.find.route-ready', {
-        address: this.network.address.toString(),
-        peerAddress: wanted,
-        lobbyId: key.slice(wanted.length + 1),
-      });
+    const requests = this.requests.get(wanted);
+    if (!requests) return;
+    requests.forEach((request) => this.respond(request, 'route-ready'));
+    this.requests.delete(wanted);
+    VirtualNetworkConsoleLogger.log('lobby.find.route-ready', {
+      address: this.network.address.toString(),
+      peerAddress: wanted,
     });
   }
 
   answerFailed(peerAddress) {
     const wanted = Address.from(peerAddress).toString();
-    Array.from(this.requests.keys()).forEach((key) => {
-      if (BackgroundConnectionKeeper.peerOf(key) !== wanted) return;
-      this.requests.get(key).forEach((request) => this.respond(request, 'route-failed'));
-      this.requests.delete(key);
-      VirtualNetworkConsoleLogger.log('lobby.find.route-failed', {
-        address: this.network.address.toString(),
-        peerAddress: wanted,
-        lobbyId: key.slice(wanted.length + 1),
-      });
+    const requests = this.requests.get(wanted);
+    if (!requests) return;
+    requests.forEach((request) => this.respond(request, 'route-failed'));
+    this.requests.delete(wanted);
+    VirtualNetworkConsoleLogger.log('lobby.find.route-failed', {
+      address: this.network.address.toString(),
+      peerAddress: wanted,
     });
   }
 

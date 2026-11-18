@@ -336,6 +336,8 @@ export class VirtualNetworkHost {
     if (message.to && message.to !== this.address.toString()) return false;
     if (message.targetRole && message.targetRole !== this.config.role) return false;
     if (message.targetInstanceId && message.targetInstanceId !== this.instanceId) return false;
+    if (message.lobbyId && String(message.lobbyId) !== String(this.config.lobbyId)) return false;
+    if (message.tableId && String(message.tableId) !== String(this.config.tableId)) return false;
     return true;
   }
 
@@ -356,14 +358,13 @@ export class VirtualNetworkHost {
       peerAddress: message.to,
       messageType: message.type,
       senderRole: message.senderRole,
+      lobbyId: message.lobbyId,
+      tableId: message.tableId,
     });
-    this.p2pNetwork.sendTo(message.to, {
-      ...message,
-      sender: this.address.toString(),
-      senderInstanceId: this.instanceId,
-      senderRole: this.config.role,
-      ttl: this.config.controlTtl,
-    });
+    // Forward the table tab's message verbatim. The originating tab's role and
+    // instance id must survive the hop so the far-side Lobby can route the
+    // message to the right table tab and the table can match its instance.
+    this.p2pNetwork.sendTo(message.to, { ...message });
   }
 
   handleMeshAnnounce(message) {
