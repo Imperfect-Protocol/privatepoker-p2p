@@ -27,6 +27,10 @@ class TestStore {
     return false;
   }
 
+  hasLivePeerRoute() {
+    return this.live ?? false;
+  }
+
   remember(record) {
     this.remembered.push(record);
   }
@@ -125,5 +129,41 @@ test('lobby route keeper preserves route intent and reconnects instead of forget
   assert.equal(store.recovering.peerAddress, '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
   assert.equal(store.forgotten.length, 0);
   assert.ok(events.some((event) => event.step === 'PreserveRouteAccepted'));
+  keeper.stop();
+});
+
+test('a connected background route is no longer treated as pending', () => {
+  const bus = new TestBus();
+  const store = new TestStore();
+  store.live = true;
+  const keeper = new LobbyRouteKeeper(
+    () => {},
+    '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    new Uint8Array(32),
+    { bus, store, meshUrls: [] },
+  );
+  keeper.start();
+  keeper.host.runtime = new TestRuntime();
+  keeper.host.subscribe = () => {};
+  keeper.host.unsubscribe = () => {};
+  keeper.host.controlBus.registerPresence = () => {};
+  keeper.host.controlBus.unregisterPresence = () => {};
+
+  const route = { peerAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', lobbyId: '1' };
+  keeper.acceptRouteMessage({
+    type: 'keep-route',
+    ownerAddress: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    ...route,
+    tableId: '7',
+  });
+  assert.equal(keeper.pendingRoutes.size, 1);
+
+  keeper.handleNetworkEvent({ type: 'PeerConnected', ...route });
+
+  assert.equal(keeper.pendingRoutes.size, 0);
+  assert.equal(keeper.knowsRoute(route), true);
+
+  store.live = false;
+  assert.equal(keeper.knowsRoute(route), false);
   keeper.stop();
 });

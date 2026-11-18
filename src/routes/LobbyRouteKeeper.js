@@ -207,6 +207,7 @@ export class LobbyRouteKeeper {
       ?? this.activeLabels.get(RouteRecord.address(event.peerAddress));
     if (!record) return;
     this.clearReconnect(record);
+    this.pendingRoutes.delete(record.peerAddress);
     this.liveRecords.set(record.peerAddress, record);
     this.startLiveHeartbeat();
     this.store.markLive(record);
