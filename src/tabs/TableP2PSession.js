@@ -59,7 +59,15 @@ export class TableP2PSession {
       this.inboundLabel,
       this.outboundLabel,
       peerAddress,
-      20_000,
+      45_000,
+      lobbyId ?? this.host.config.lobbyId,
+      tableId ?? this.host.config.tableId,
+    );
+  }
+
+  poke(peerAddress, lobbyId = undefined, tableId = undefined) {
+    return this.host.pokePeer(
+      peerAddress,
       lobbyId ?? this.host.config.lobbyId,
       tableId ?? this.host.config.tableId,
     );
@@ -80,6 +88,10 @@ export class TableP2PSession {
   isConnected() {
     return Array.from(this.host.connectedSubscriptions.values())
       .some((subscription) => subscription.subscriptionLabel === this.inboundLabel);
+  }
+
+  isOutboundConnected() {
+    return this.host.hasConnectedChannel(this.outboundLabel);
   }
 
   close() {

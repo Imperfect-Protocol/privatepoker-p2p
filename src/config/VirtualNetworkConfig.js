@@ -4,7 +4,7 @@ export class VirtualNetworkConfig {
     this.lobbyId = fields.lobbyId ?? 'default-lobby';
     this.tableId = fields.tableId ?? 'default-table';
     this.controlTtl = fields.controlTtl ?? 8;
-    this.iceGatheringTimeoutMs = fields.iceGatheringTimeoutMs ?? 10_000;
+    this.iceGatheringTimeoutMs = fields.iceGatheringTimeoutMs ?? 4_000;
     this.tablePresenceTimeoutMs = fields.tablePresenceTimeoutMs ?? 250;
     this.iceServers = fields.iceServers ?? [
       { urls: 'stun:stun.l.google.com:19302' },

@@ -94,7 +94,7 @@ function makeHost(fields = {}) {
   };
   const host = new VirtualNetworkHost(
     fields.handler ?? (() => {}),
-    '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    fields.address ?? '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     new Uint8Array(32),
     {
       role: fields.role ?? 'peer',
@@ -421,5 +421,171 @@ test('without an app route the mesh fallback still runs', () => {
   host.requestMeshFallback(created.peerAddress.toString());
 
   assert.equal(meshLookups, 1);
+  host.close();
+});
+
+
+const PEER_A = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const PEER_B = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+const announceFrom = (peerAddress) => ({
+  type: 'p2p-mst-announce',
+  from: peerAddress,
+  lobbyId: '1',
+  tableId: '7',
+});
+
+const offerFrom = (peerAddress) => ({
+  type: 'sdp-offer',
+  from: peerAddress,
+  via: 'p2p',
+  lobbyId: '1',
+  tableId: '7',
+});
+
+const answerFrom = (peerAddress) => ({
+  type: 'sdp-answer',
+  from: peerAddress,
+  to: PEER_A,
+  subscriptionLabel: 'inbound',
+  channelLabel: 'outbound',
+  lobbyId: '1',
+  tableId: '7',
+  sdp: 'answer',
+});
+
+test('simultaneous p2p announces: lower address offers while the higher address stays quiet', () => {
+  const lower = makeHost({ address: PEER_A });
+  lower.subscribe('inbound', 'outbound', PEER_B, 10_000, '1', '7');
+  const lowerSubscription = Array.from(lower.subscriptions.values()).at(-1);
+  lowerSubscription.state = ConnectionState.INITIAL;
+  assert.equal(lower.shouldCreateP2POffer(announceFrom(PEER_B)), true);
+
+  const higher = makeHost({ address: PEER_B });
+  higher.subscribe('inbound', 'outbound', PEER_A, 10_000, '1', '7');
+  const higherSubscription = Array.from(higher.subscriptions.values()).at(-1);
+  higherSubscription.state = ConnectionState.INITIAL;
+  assert.equal(higher.shouldCreateP2POffer(announceFrom(PEER_A)), false);
+
+  lower.close();
+  higher.close();
+});
+
+test('simultaneous p2p offers: the lower address keeps its own offer', () => {
+  const host = makeHost({ address: PEER_A });
+  host.subscribe('inbound', 'outbound', PEER_B, 10_000, '1', '7');
+  const subscription = Array.from(host.subscriptions.values()).at(-1);
+  subscription.state = ConnectionState.TRY_P2P_NETWORK;
+  const localOffer = {
+    closed: false,
+    isConnected: () => false,
+    hasLocalOffer: () => true,
+    close() {
+      this.closed = true;
+    },
+  };
+  subscription.attachPeerSession(localOffer);
+  subscription.localOfferSent = true;
+
+  const accepted = host.prepareIncomingOffer(subscription, offerFrom(PEER_B));
+
+  assert.equal(accepted, false);
+  assert.equal(localOffer.closed, false);
+  host.close();
+});
+
+test('simultaneous p2p offers: the higher address replaces its own offer', () => {
+  const host = makeHost({ address: PEER_B });
+  host.subscribe('inbound', 'outbound', PEER_A, 10_000, '1', '7');
+  const subscription = Array.from(host.subscriptions.values()).at(-1);
+  subscription.state = ConnectionState.TRY_P2P_NETWORK;
+  const localOffer = {
+    closed: false,
+    isConnected: () => false,
+    hasLocalOffer: () => true,
+    close() {
+      this.closed = true;
+    },
+  };
+  subscription.attachPeerSession(localOffer);
+  subscription.localOfferSent = true;
+
+  const accepted = host.prepareIncomingOffer(subscription, offerFrom(PEER_A));
+
+  assert.equal(accepted, true);
+  assert.equal(localOffer.closed, true);
+  host.close();
+});
+
+test('a p2p answer is ignored unless a local offer is outstanding', async () => {
+  const host = makeHost({ address: PEER_A });
+  host.subscribe('inbound', 'outbound', PEER_B, 10_000, '1', '7');
+  const subscription = Array.from(host.subscriptions.values()).at(-1);
+  let applied = 0;
+  subscription.attachPeerSession({
+    isConnected: () => false,
+    hasLocalOffer: () => false,
+    applyAnswer: async () => {
+      applied += 1;
+    },
+    close() {},
+  });
+
+  await host.handleSdpAnswer(answerFrom(PEER_B));
+  assert.equal(applied, 0);
+
+  subscription.peerSession.hasLocalOffer = () => true;
+  await host.handleSdpAnswer(answerFrom(PEER_B));
+  assert.equal(applied, 1);
+
+  host.close();
+});
+
+test('an inbound p2p offer beats a local offer that has not reached the wire', () => {
+  const host = makeHost({ address: PEER_A });
+  host.subscribe('inbound', 'outbound', PEER_B, 10_000, '1', '7');
+  const subscription = Array.from(host.subscriptions.values()).at(-1);
+  subscription.state = ConnectionState.TRY_P2P_NETWORK;
+  const creatingOffer = {
+    closed: false,
+    isConnected: () => false,
+    hasLocalOffer: () => true,
+    close() {
+      this.closed = true;
+    },
+  };
+  subscription.attachPeerSession(creatingOffer);
+  subscription.localOfferSent = false;
+
+  const accepted = host.prepareIncomingOffer(subscription, offerFrom(PEER_B));
+
+  assert.equal(accepted, true);
+  assert.equal(creatingOffer.closed, true);
+  assert.equal(subscription.localOfferSent, false);
+  host.close();
+});
+
+test('a local offer is withheld when the session is replaced while creating it', async () => {
+  const host = makeHost({ address: PEER_B });
+  host.subscribe('inbound', 'outbound', PEER_A, 10_000, '1', '7');
+  const subscription = Array.from(host.subscriptions.values()).at(-1);
+  let wireMessages = 0;
+  host.broadcastControl = () => {
+    wireMessages += 1;
+  };
+  host.createPeerSession = () => ({
+    hasLocalOffer: () => true,
+    isConnected: () => false,
+    close() {},
+    async createOffer() {
+      subscription.replaceForOffer('p2p');
+      return { type: 'offer', sdp: 'stale-offer' };
+    },
+  });
+
+  await host.sendOffer(PEER_A, 'inbound', 'outbound', 'p2p', '', '1', '7');
+
+  assert.equal(wireMessages, 0);
+  assert.equal(subscription.localOfferSent, false);
   host.close();
 });

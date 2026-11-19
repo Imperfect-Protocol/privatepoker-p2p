@@ -12,6 +12,7 @@ export const ConnectionStep = Object.freeze({
   ANSWER_CREATING: 'AnswerCreating',
   ANSWER_SENT: 'AnswerSent',
   ANSWER_RECEIVED: 'AnswerReceived',
+  ANSWER_SUPPRESSED: 'AnswerSuppressed',
   SIGNAL_RELAYED: 'SignalRelayed',
   ROUTE_AVAILABLE: 'RouteAvailable',
 });

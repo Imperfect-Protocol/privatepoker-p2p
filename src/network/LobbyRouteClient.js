@@ -1,6 +1,4 @@
 import { ConnectionStep } from '../events/ConnectionStep.js';
-import { VirtualNetworkEvent } from '../events/VirtualNetworkEvent.js';
-import { ConnectionState } from '../state/ConnectionState.js';
 import { TabMessage } from '../tabs/TabMessage.js';
 import { VirtualNetworkConsoleLogger } from '../logging/VirtualNetworkConsoleLogger.js';
 
@@ -62,16 +60,9 @@ export class LobbyRouteClient {
         requestId: message.requestId,
         peerAddress: message.peerAddress,
       });
-      this.network.handler(VirtualNetworkEvent.connectionFailed({
-        state: ConnectionState.FAILED,
-        subscriptionLabel: subscription.subscriptionLabel,
-        channelLabel: subscription.channelLabel,
-        lobbyId: subscription.lobbyId,
-        tableId: subscription.tableId,
-        peerAddress: subscription.peerAddress.toString(),
-        error: new Error('The Lobby tab could not establish a background route.'),
-        errorMessage: 'The Lobby tab could not establish a background route.',
-      }));
+      subscription.stateMachine.failed(
+        new Error('The Lobby tab could not establish a background route.'),
+      );
       return true;
     }
 

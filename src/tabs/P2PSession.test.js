@@ -32,3 +32,31 @@ test('TableP2PSession subscription targets the requested peer and scope', () => 
   assert.equal(subscription.channelLabel, 'outbound');
   session.close();
 });
+
+test('TableP2PSession poke restarts the subscription to the requested peer', () => {
+  const session = new TableP2PSession({ address: ADDRESS, privateKey: {}, peerId: 'parent-1', lobbyId: '1', tableId: '7' });
+  session.subscribe(PEER);
+  const subscription = session.host.findSubscriptionByPeer(PEER, '1', '7');
+  let restarts = 0;
+  subscription.forceRestart = () => {
+    restarts += 1;
+  };
+
+  const result = session.poke(PEER);
+
+  assert.equal(result.ok, true);
+  assert.equal(restarts, 1);
+  session.close();
+});
+
+test('TableP2PSession reports outbound connectivity from the connected channel', () => {
+  const session = new TableP2PSession({ address: ADDRESS, privateKey: {}, peerId: 'parent-1', lobbyId: '1', tableId: '7' });
+  assert.equal(session.isOutboundConnected(), false);
+
+  session.host.channels.set('outbound', {
+    label: 'outbound',
+    subscription: { peerSession: { isConnected: () => true } },
+  });
+  assert.equal(session.isOutboundConnected(), true);
+  session.close();
+});

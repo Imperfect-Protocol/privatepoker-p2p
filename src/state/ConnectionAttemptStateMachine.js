@@ -58,6 +58,7 @@ export class ConnectionAttemptStateMachine {
   }
 
   armTimeout() {
+    this.clearTimer();
     this.timer = this.runtime.setTimer(() => this.timedOut(), this.subscription.timeout.toMilliseconds());
   }
 

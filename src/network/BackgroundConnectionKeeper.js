@@ -61,7 +61,7 @@ export class BackgroundConnectionKeeper {
       `lobby:${peerAddress}:inbound`,
       `lobby:${peerAddress}:outbound`,
       peerAddress,
-      20_000,
+      30_000,
       this.network.config.lobbyId,
       '0',
     );

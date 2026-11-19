@@ -50,7 +50,7 @@ test('a table request creates exactly one lobby-owned background subscription', 
   keeper.rememberRequest(request());
 
   assert.equal(network.subscriptions.length, 1);
-  assert.deepEqual(network.subscriptions[0].slice(3), [20_000, '1', '0']);
+  assert.deepEqual(network.subscriptions[0].slice(3), [30_000, '1', '0']);
   assert.equal(keeper.requests.get('0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb').length, 1);
 });
 

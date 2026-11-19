@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { LobbyRouteClient } from './LobbyRouteClient.js';
+import { VirtualSubscription } from './VirtualSubscription.js';
 import { TabMessageType } from '../tabs/TabMessage.js';
-import { SubscriptionScope } from './SubscriptionScope.js';
+import { ConnectionState } from '../state/ConnectionState.js';
 
 function makeNetwork({ connected = false } = {}) {
   const broadcasts = [];
@@ -32,20 +33,15 @@ function makeNetwork({ connected = false } = {}) {
 }
 
 function subscription(network) {
-  return {
+  return new VirtualSubscription({
+    network,
     subscriptionLabel: 'inbound',
     channelLabel: 'outbound',
-    peerAddress: { toString: () => '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+    peerAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    timeout: 10_000,
     lobbyId: '1',
     tableId: '7',
-    scope: () => SubscriptionScope.from({
-      subscriptionLabel: 'inbound',
-      channelLabel: 'outbound',
-      peerAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      lobbyId: '1',
-      tableId: '7',
-    }),
-  };
+  });
 }
 
 test('a table find-peer request is published with a deterministic request id', () => {
@@ -94,7 +90,8 @@ test('a route-failed response surfaces a connection failure event', () => {
   network.bindHandler((event) => {
     if (event.type === 'ConnectionFailed') failures.push(event);
   });
-  void client.findPeer(subscription(network));
+  const sub = subscription(network);
+  void client.findPeer(sub);
 
   client.handleFindPeerResponse({
     type: TabMessageType.FIND_PEER_RESPONSE,
@@ -109,4 +106,5 @@ test('a route-failed response surfaces a connection failure event', () => {
 
   assert.equal(failures.length, 1);
   assert.equal(failures[0].peerAddress, '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+  assert.equal(sub.state, ConnectionState.FAILED);
 });

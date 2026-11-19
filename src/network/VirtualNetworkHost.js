@@ -100,7 +100,25 @@ export class VirtualNetworkHost {
   }
 
   emitConnectionStep(fields) {
+    this.noteSubscriptionProgress(fields);
     this.handler(VirtualNetworkEvent.connectionStep(fields));
+  }
+
+  /**
+   * A connection attempt only times out after silence. Every signal we send or
+   * receive re-arms the subscription's idle timer.
+   */
+  noteSubscriptionProgress(fields = {}) {
+    const peerAddress = fields.peerAddress ?? fields.from;
+    if (!peerAddress) return;
+    const subscription = this.findSubscriptionByMessage({
+      from: peerAddress,
+      subscriptionLabel: fields.subscriptionLabel,
+      channelLabel: fields.channelLabel,
+      lobbyId: fields.lobbyId,
+      tableId: fields.tableId,
+    }) ?? this.findSubscriptionByPeerScope(peerAddress, fields.lobbyId, fields.tableId);
+    subscription?.noteProgress();
   }
 
   shouldUseMeshFirst(peerAddress) {
@@ -316,7 +334,10 @@ export class VirtualNetworkHost {
     }
 
     if (source === 'local' && this.config.role === 'table') {
-      if (!this.acceptsLocalTableMessage(message)) return;
+      if (!this.acceptsLocalTableMessage(message)) {
+        if (message.type === 'sdp-answer') this.emitSuppressedAnswer(message, 'local-target-mismatch');
+        return;
+      }
       if (message.type === TabMessageType.FIND_PEER_RESPONSE) {
         this.p2pNetwork.handleFindPeerResponse(message);
         return;
@@ -544,7 +565,18 @@ export class VirtualNetworkHost {
       peerAddress: subscription.peerAddress.toString(),
     });
     subscription.attachPeerSession(peerSession);
-    const offer = await peerSession.createOffer();
+    let offer;
+    try {
+      offer = await peerSession.createOffer();
+    } catch (error) {
+      if (subscription.peerSession !== peerSession) return;
+      subscription.stateMachine.failed(error);
+      return;
+    }
+    // Inbound communication may have replaced this session while the offer was
+    // being created. If so, withhold our offer and let the peer lead.
+    if (subscription.peerSession !== peerSession) return;
+    subscription.markOfferSent();
     this.emitConnectionStep({
       step: ConnectionStep.OFFER_SENT,
       via,
@@ -629,11 +661,23 @@ export class VirtualNetworkHost {
   }
 
   async handleSdpAnswer(message) {
-    if (message.to !== this.address.toString()) return;
-    if (!this.acceptsControlTarget(message)) return;
+    if (message.to !== this.address.toString()) {
+      return this.emitSuppressedAnswer(message, 'wrong-address');
+    }
+    if (!this.acceptsControlTarget(message)) {
+      return this.emitSuppressedAnswer(message, 'target-mismatch');
+    }
     const subscription = this.findSubscriptionByMessage(message);
-    if (!subscription) return;
-    if (subscription.state === ConnectionState.PEER_CONNECTED) return;
+    if (!subscription) return this.emitSuppressedAnswer(message, 'subscription-missing');
+    if (subscription.state === ConnectionState.PEER_CONNECTED) {
+      return this.emitSuppressedAnswer(message, 'already-connected');
+    }
+    // Only an outstanding local offer can consume an answer. In a glare both
+    // sides may answer each other, and the answer for a replaced offer must not
+    // be applied to the surviving session.
+    if (!subscription.peerSession?.hasLocalOffer?.()) {
+      return this.emitSuppressedAnswer(message, 'no-local-offer');
+    }
     this.emitConnectionStep({
       step: ConnectionStep.ANSWER_RECEIVED,
       via: message.via,
@@ -644,9 +688,21 @@ export class VirtualNetworkHost {
       tableId: subscription.tableId,
       peerAddress: subscription.peerAddress.toString(),
     });
-    const peerSession = subscription.peerSession ?? this.createPeerSession(message.from);
-    subscription.attachPeerSession(peerSession);
-    await peerSession.applyAnswer({ type: 'answer', sdp: message.sdp });
+    await subscription.peerSession.applyAnswer({ type: 'answer', sdp: message.sdp });
+  }
+
+  emitSuppressedAnswer(message, reason) {
+    this.emitConnectionStep({
+      step: ConnectionStep.ANSWER_SUPPRESSED,
+      via: message.via,
+      reason,
+      flowId: message.flowId,
+      subscriptionLabel: message.subscriptionLabel,
+      channelLabel: message.channelLabel,
+      lobbyId: message.lobbyId ?? this.config.lobbyId,
+      tableId: message.tableId ?? this.config.tableId,
+      peerAddress: message.from,
+    });
   }
 
   async handleMeshTriggerOffer(message, enqueue) {
@@ -758,9 +814,7 @@ export class VirtualNetworkHost {
       tableId: subscription.tableId,
       peerAddress: subscription.peerAddress.toString(),
     });
-    const peerSession = subscription.peerSession ?? this.createPeerSession(message.from);
-    subscription.attachPeerSession(peerSession);
-    await peerSession.applyAnswer({ type: 'answer', sdp: message.sdp });
+    await subscription.peerSession.applyAnswer({ type: 'answer', sdp: message.sdp });
   }
 
   handleMeshRouteAvailable(message) {
@@ -812,7 +866,7 @@ export class VirtualNetworkHost {
       subscriptionLabel: message.subscriptionLabel,
       channelLabel: message.channelLabel,
       peerAddress: message.from,
-      timeout: 10_000,
+      timeout: 45_000,
       lobbyId: message.lobbyId ?? this.config.lobbyId,
       tableId: message.tableId ?? this.config.tableId,
     });
@@ -850,6 +904,19 @@ export class VirtualNetworkHost {
     return null;
   }
 
+  pokePeer(peerAddress, lobbyId = undefined, tableId = undefined) {
+    const subscription = this.findSubscriptionByPeer(peerAddress, lobbyId, tableId);
+    if (!subscription) return Result.err(new Error(`No subscription to ${peerAddress}.`));
+    subscription.forceRestart();
+    return Result.ok();
+  }
+
+  hasConnectedChannel(channelLabel) {
+    return Array.from(this.channels.values()).some((channel) => (
+      channel.label === channelLabel && channel.subscription.peerSession?.isConnected()
+    ));
+  }
+
   close() {
     if (this.closed) return;
     this.closed = true;
@@ -877,6 +944,29 @@ export class VirtualNetworkHost {
       if (subscription.tableId === '0' || message.via === 'mesh') return false;
     }
     if (subscription.state !== ConnectionState.PEER_CONNECTED && subscription.peerSession?.isConnected()) return false;
+
+    // If an inbound offer arrives while our own offer is still being created,
+    // the peer's communication wins: drop ours and answer theirs.
+    const isCollidingOffer = message.via === 'p2p' && Boolean(subscription.peerSession?.hasLocalOffer?.());
+    if (isCollidingOffer && subscription.localOfferSent) {
+      // Both offers are already on the wire. Only the lower address keeps its
+      // own offer so the two sides agree on who answers.
+      if (this.address.toString() < Address.from(message.from).toString()) {
+        this.emitConnectionStep({
+          step: ConnectionStep.OFFER_SUPPRESSED,
+          via: message.via,
+          reason: 'simultaneous-p2p-offer',
+          flowId: message.flowId,
+          subscriptionLabel: subscription.subscriptionLabel,
+          channelLabel: subscription.channelLabel,
+          lobbyId: subscription.lobbyId,
+          tableId: subscription.tableId,
+          peerAddress: subscription.peerAddress.toString(),
+        });
+        return false;
+      }
+    }
+
     this.emitConnectionStep({
       step: ConnectionStep.REPLACING_CONNECTION,
       via: message.via,
@@ -993,7 +1083,9 @@ export class VirtualNetworkHost {
       ?? this.findSubscriptionByPeerScope(message.from, message.lobbyId, message.tableId);
     if (!subscription) return true;
     if (subscription.peerAddress.toString() !== Address.from(message.from).toString()) return true;
-    if (subscription.state !== ConnectionState.TRY_P2P_NETWORK) return true;
+    const negotiating = subscription.state === ConnectionState.TRY_P2P_NETWORK
+      || subscription.state === ConnectionState.INITIAL;
+    if (!negotiating) return true;
     return this.address.toString() < Address.from(message.from).toString();
   }
 }

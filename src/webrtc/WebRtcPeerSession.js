@@ -8,6 +8,8 @@ export class WebRtcPeerSession {
     this.RTCPeerConnection = fields.RTCPeerConnection;
     this.peerConnection = null;
     this.dataChannel = null;
+    this.outboundStream = null;
+    this.localOffer = false;
     this.onConnected = null;
     this.onDisconnected = null;
     this.onMessage = null;
@@ -22,6 +24,11 @@ export class WebRtcPeerSession {
     return this.dataChannel?.readyState === 'open';
   }
 
+  /** True while this session owns an unanswered local offer. */
+  hasLocalOffer() {
+    return this.localOffer;
+  }
+
   createPeerConnection(createChannel) {
     this.peerConnection = new this.RTCPeerConnection(this.rtcConfig);
     this.peerConnection.onconnectionstatechange = () => this.handlePeerState();
@@ -32,6 +39,7 @@ export class WebRtcPeerSession {
   }
 
   async createOffer() {
+    this.localOffer = true;
     this.createPeerConnection(true);
     await this.peerConnection.setLocalDescription(await this.peerConnection.createOffer());
     await this.waitForIce();
@@ -39,6 +47,7 @@ export class WebRtcPeerSession {
   }
 
   async acceptOffer(offer) {
+    this.localOffer = false;
     this.createPeerConnection(false);
     await this.peerConnection.setRemoteDescription(offer);
     await this.peerConnection.setLocalDescription(await this.peerConnection.createAnswer());
@@ -48,6 +57,7 @@ export class WebRtcPeerSession {
 
   async applyAnswer(answer) {
     await this.peerConnection.setRemoteDescription(answer);
+    this.localOffer = false;
   }
 
   attachDataChannel(dataChannel) {
@@ -140,6 +150,7 @@ class WebRtcMediaNegotiator {
     const pc = this.session.peerConnection;
     if (!pc || !this.session.isConnected()) return;
     const tracks = this.localStream?.getTracks() ?? [];
+    const outboundStream = this.ensureOutboundStream(tracks);
     const trackIds = new Set(tracks.map((track) => track.id));
     let changed = false;
 
@@ -151,7 +162,7 @@ class WebRtcMediaNegotiator {
     });
     tracks.forEach((track) => {
       if (this.senders.has(track.id)) return;
-      this.senders.set(track.id, pc.addTrack(track, this.localStream));
+      this.senders.set(track.id, pc.addTrack(track, outboundStream));
       changed = true;
     });
 
@@ -159,6 +170,34 @@ class WebRtcMediaNegotiator {
       this.pendingOffer = true;
       this.enqueue(() => this.offer());
     }
+  }
+
+  /**
+   * Keeps one MediaStream identity for every negotiated track. The app may publish a fresh
+   * MediaStream on each device toggle; WebRTC must still see a single stream so a remote
+   * audio renegotiation does not replace the remote video stream.
+   */
+  ensureOutboundStream(tracks) {
+    const supplied = this.localStream;
+    if (
+      !supplied
+      || typeof supplied.getTracks !== 'function'
+      || typeof supplied.addTrack !== 'function'
+      || typeof supplied.removeTrack !== 'function'
+    ) {
+      return supplied;
+    }
+    if (!this.outboundStream) this.outboundStream = supplied;
+
+    const desiredTracks = new Map(tracks.map((track) => [track.id, track]));
+    this.outboundStream.getTracks().forEach((track) => {
+      if (!desiredTracks.has(track.id)) this.outboundStream.removeTrack(track);
+    });
+    const currentIds = new Set(this.outboundStream.getTracks().map((track) => track.id));
+    tracks.forEach((track) => {
+      if (!currentIds.has(track.id)) this.outboundStream.addTrack(track);
+    });
+    return this.outboundStream;
   }
 
   enqueue(task) {

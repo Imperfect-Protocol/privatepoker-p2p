@@ -22,7 +22,7 @@ class FakePeerConnection {
   async setRemoteDescription(description) {
     this.signalingState = description.type === 'offer' ? 'have-remote-offer' : 'stable';
   }
-  addTrack(track) { const sender = { track }; this.senders.push(sender); return sender; }
+  addTrack(track, stream) { const sender = { track, stream }; this.senders.push(sender); return sender; }
   removeTrack(sender) { this.senders = this.senders.filter((entry) => entry !== sender); }
   close() {}
 }
@@ -34,6 +34,19 @@ function session(localAddress = 'a', peerAddress = 'b') {
 }
 
 function stream(...tracks) { return { getTracks: () => tracks }; }
+
+function mediaStream(...tracks) {
+  const members = [...tracks];
+  return {
+    id: 'stable-outbound-stream',
+    getTracks: () => [...members],
+    addTrack: (track) => members.push(track),
+    removeTrack: (track) => {
+      const index = members.indexOf(track);
+      if (index >= 0) members.splice(index, 1);
+    },
+  };
+}
 
 async function flush(peer) {
   await peer.media.queue;
@@ -57,6 +70,25 @@ test('media uses the existing connection and removes tracks without closing data
   assert.equal(connection.senders.length, 1);
   assert.equal(connection.senders[0].track.kind, 'audio');
   assert.equal(peer.isConnected(), true);
+});
+
+test('audio and video keep one outbound stream when devices are enabled separately', async () => {
+  const peer = session();
+  const connection = peer.peerConnection;
+  const video = { id: 'video', kind: 'video' };
+  const audio = { id: 'audio', kind: 'audio' };
+
+  peer.setLocalStream(mediaStream(video));
+  await flush(peer);
+  peer.media.handleDescription({ type: 'answer', sdp: 'answer' });
+  await flush(peer);
+
+  peer.setLocalStream(mediaStream(video, audio));
+  await flush(peer);
+
+  assert.equal(connection.senders.length, 2);
+  assert.equal(connection.senders[0].stream, connection.senders[1].stream);
+  assert.deepEqual(connection.senders[0].stream.getTracks().map((track) => track.id), ['video', 'audio']);
 });
 
 test('track changes during an outstanding offer trigger a second offer after its answer', async () => {
@@ -95,4 +127,17 @@ test('media descriptions are consumed internally; application messages still arr
   assert.equal(received.length, 0);
   peer.handleDataMessage({ data: JSON.stringify({ kind: 'message', messageData: { kind: 'chat', text: 'hello' } }) });
   assert.equal(received[0].messageData.text, 'hello');
+});
+
+test('local offer tracks whether this session can consume an answer', async () => {
+  const offerer = session();
+  assert.equal(offerer.hasLocalOffer(), false);
+  await offerer.createOffer();
+  assert.equal(offerer.hasLocalOffer(), true);
+  await offerer.applyAnswer({ type: 'answer', sdp: 'answer' });
+  assert.equal(offerer.hasLocalOffer(), false);
+
+  const answerer = session();
+  await answerer.acceptOffer({ type: 'offer', sdp: 'remote' });
+  assert.equal(answerer.hasLocalOffer(), false);
 });

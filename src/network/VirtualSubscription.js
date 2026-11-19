@@ -17,6 +17,7 @@ export class VirtualSubscription {
     this.tableId = String(fields.tableId ?? fields.network.config.tableId);
     this.state = ConnectionState.INITIAL;
     this.timedOutOnce = false;
+    this.localOfferSent = false;
     this.peerSession = null;
     this.stateMachine = new ConnectionAttemptStateMachine(this, fields.network.runtime);
   }
@@ -49,6 +50,18 @@ export class VirtualSubscription {
         ConnectionState.DISCONNECTED,
       ].includes(this.state)
     );
+  }
+
+  /** Any send or receive over this attempt proves the peer is still there. */
+  /** True once our own offer is on the wire, not merely being created. */
+  markOfferSent() {
+    this.localOfferSent = true;
+  }
+
+  noteProgress() {
+    if (this.state === ConnectionState.PEER_CONNECTED) return;
+    if (this.peerSession?.isConnected?.()) return;
+    this.stateMachine.armTimeout();
   }
 
   hasP2PRoute() {
@@ -134,6 +147,7 @@ export class VirtualSubscription {
   }
 
   handlePeerWaiting(message) {
+    this.noteProgress();
     this.stateMachine.peerWaiting();
     this.network.handler(VirtualNetworkEvent.peerWaiting({
       state: ConnectionState.PEER_WAITING,
@@ -147,6 +161,7 @@ export class VirtualSubscription {
   }
 
   handlePeerWaitAccepted(message) {
+    this.noteProgress();
     this.network.handler(VirtualNetworkEvent.peerWaitAccepted({
       state: this.state,
       subscriptionLabel: this.subscriptionLabel,
@@ -173,6 +188,7 @@ export class VirtualSubscription {
 
   handleMessage(peerSession, message) {
     if (!this.isCurrentPeerSession(peerSession)) return;
+    this.noteProgress();
     this.network.handler(VirtualNetworkEvent.messageReceived({
       subscriptionLabel: this.subscriptionLabel,
       lobbyId: this.lobbyId,
@@ -217,6 +233,7 @@ export class VirtualSubscription {
 
   replaceForOffer(via) {
     this.network.unregisterConnectedSubscription(this);
+    this.localOfferSent = false;
     this.abortNegotiation();
     this.stateMachine.clearTimer();
     this.stateMachine.transition(via === 'p2p'
@@ -227,6 +244,11 @@ export class VirtualSubscription {
 
   restart() {
     if (!this.canRestart()) return;
+    this.start().catch((error) => this.stateMachine.failed(error));
+  }
+
+  forceRestart() {
+    this.abortNegotiation();
     this.start().catch((error) => this.stateMachine.failed(error));
   }
 
